@@ -1,6 +1,6 @@
 ---
 name: skill-creator
-description: 创建高质量 Skill 的指南。当用户要创建新 skill（或更新已有 skill），通过专业知识、workflow 或 tool integration 扩展 Claude 能力时使用。
+description: 初始化新 skill 目录（运行 init_skill.py）、打包 skill（运行 package_skill.py）、或需要了解 skill 结构规范时使用。
 license: 完整条款见 LICENSE.txt
 ---
 

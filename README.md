@@ -11,7 +11,7 @@
 | Skill | 功能 |
 |-------|------|
 | **frontend-master** | 大师级前端开发，反 AI 审美，设计系统持久化 |
-| **skill-creator** | 创建/优化 Skill |
+| **skill-creator** | Skill 初始化/打包工具 |
 | **superpowers** | 完整开发工作流（14 个子技能） |
 
 <details>
@@ -31,7 +31,7 @@
 | finishing-a-development-branch | 完成开发分支 |
 | using-git-worktrees | Git Worktrees 使用 |
 | verification-before-completion | 完成前验证 |
-| writing-skills | 编写 Skills |
+| writing-skills | Skill 内容编写 + TDD 验证 |
 | using-superpowers | Superpowers 使用指南 |
 
 </details>

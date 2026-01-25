@@ -1,6 +1,6 @@
 ---
 name: writing-skills
-description: 在创建新 skill、编辑已有 skill，或在部署前验证 skill 是否有效时使用。
+description: 在编写 skill 内容、验证 skill 是否有效、或需要用 TDD 方法测试 skill 能否被正确遵守时使用。
 ---
 
 # Writing Skills

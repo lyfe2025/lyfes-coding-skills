@@ -15,10 +15,23 @@ Usage:
 
 import csv
 import json
-import os
+import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
+from string import Template
 from core import search, DATA_DIR
+
+
+TEMPLATE_FILE = Path(__file__).parent.parent / "templates" / "MASTER-TEMPLATE.md"
+DEFAULT_TYPOGRAPHY = {
+    "heading": "Source Serif 4",
+    "body": "Noto Sans",
+    "mood": "Editorial, readable, multilingual",
+    "best_for": "Content-rich interfaces and personal homepages",
+    "google_fonts_url": "https://fonts.google.com/share?selection.family=Noto+Sans|Source+Serif+4",
+    "css_import": "@import url('https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap');"
+}
 
 
 # ============ CONFIGURATION ============
@@ -222,12 +235,12 @@ class DesignSystemGenerator:
                 "notes": best_color.get("Notes", "")
             },
             "typography": {
-                "heading": best_typography.get("Heading Font", "Inter"),
-                "body": best_typography.get("Body Font", "Inter"),
-                "mood": best_typography.get("Mood/Style Keywords", reasoning.get("typography_mood", "")),
-                "best_for": best_typography.get("Best For", ""),
-                "google_fonts_url": best_typography.get("Google Fonts URL", ""),
-                "css_import": best_typography.get("CSS Import", "")
+                "heading": best_typography.get("Heading Font") or DEFAULT_TYPOGRAPHY["heading"],
+                "body": best_typography.get("Body Font") or DEFAULT_TYPOGRAPHY["body"],
+                "mood": best_typography.get("Mood/Style Keywords") or reasoning.get("typography_mood") or DEFAULT_TYPOGRAPHY["mood"],
+                "best_for": best_typography.get("Best For") or DEFAULT_TYPOGRAPHY["best_for"],
+                "google_fonts_url": best_typography.get("Google Fonts URL") or DEFAULT_TYPOGRAPHY["google_fonts_url"],
+                "css_import": best_typography.get("CSS Import") or DEFAULT_TYPOGRAPHY["css_import"]
             },
             "key_effects": combined_effects,
             "anti_patterns": reasoning.get("anti_patterns", ""),
@@ -459,8 +472,9 @@ def format_markdown(design_system: dict) -> str:
 
 
 # ============ MAIN ENTRY POINT ============
-def generate_design_system(query: str, project_name: str = None, output_format: str = "ascii", 
-                           persist: bool = False, page: str = None, output_dir: str = None) -> str:
+def generate_design_system(query: str, project_name: str = None, output_format: str = "ascii",
+                           persist: bool = False, page: str = None, output_dir: str = None,
+                           overwrite: bool = False) -> str:
     """
     Main entry point for design system generation.
 
@@ -471,6 +485,7 @@ def generate_design_system(query: str, project_name: str = None, output_format: 
         persist: If True, save design system to design-system/ folder
         page: Optional page name for page-specific override file
         output_dir: Optional output directory (defaults to current working directory)
+        overwrite: Whether existing generated files may be replaced
 
     Returns:
         Formatted design system string
@@ -480,7 +495,7 @@ def generate_design_system(query: str, project_name: str = None, output_format: 
     
     # Persist to files if requested
     if persist:
-        persist_design_system(design_system, page, output_dir, query)
+        persist_design_system(design_system, page, output_dir, query, overwrite)
 
     if output_format == "markdown":
         return format_markdown(design_system)
@@ -488,319 +503,202 @@ def generate_design_system(query: str, project_name: str = None, output_format: 
 
 
 # ============ PERSISTENCE FUNCTIONS ============
-def persist_design_system(design_system: dict, page: str = None, output_dir: str = None, page_query: str = None) -> dict:
-    """
-    Persist design system to design-system/<project>/ folder using Master + Overrides pattern.
-    
-    Args:
-        design_system: The generated design system dictionary
-        page: Optional page name for page-specific override file
-        output_dir: Optional output directory (defaults to current working directory)
-        page_query: Optional query string for intelligent page override generation
-    
-    Returns:
-        dict with created file paths and status
-    """
-    base_dir = Path(output_dir) if output_dir else Path.cwd()
-    
-    # Use project name for project-specific folder
-    project_name = design_system.get("project_name", "default")
-    project_slug = project_name.lower().replace(' ', '-')
-    
-    design_system_dir = base_dir / "design-system" / project_slug
+def persist_design_system(design_system: dict, page: str = None, output_dir: str = None,
+                          page_query: str = None, overwrite: bool = False) -> dict:
+    """将设计系统安全地持久化到 project-scoped 目录。"""
+    base_dir = (Path(output_dir) if output_dir else Path.cwd()).resolve()
+    root_dir = (base_dir / "design-system").resolve()
+    project_slug = _slugify_path_component(
+        design_system.get("project_name", "default"),
+        "default"
+    )
+    design_system_dir = (root_dir / project_slug).resolve()
     pages_dir = design_system_dir / "pages"
-    
-    created_files = []
-    
-    # Create directories
-    design_system_dir.mkdir(parents=True, exist_ok=True)
-    pages_dir.mkdir(parents=True, exist_ok=True)
-    
     master_file = design_system_dir / "MASTER.md"
-    
-    # Generate and write MASTER.md
-    master_content = format_master_md(design_system)
-    with open(master_file, 'w', encoding='utf-8') as f:
-        f.write(master_content)
-    created_files.append(str(master_file))
-    
-    # If page is specified, create page override file with intelligent content
+
+    targets = [master_file]
+    page_file = None
     if page:
-        page_file = pages_dir / f"{page.lower().replace(' ', '-')}.md"
-        page_content = format_page_override_md(design_system, page, page_query)
-        with open(page_file, 'w', encoding='utf-8') as f:
-            f.write(page_content)
-        created_files.append(str(page_file))
-    
+        page_slug = _slugify_path_component(page, "page")
+        page_file = pages_dir / f"{page_slug}.md"
+        targets.append(page_file)
+
+    if root_dir != design_system_dir and root_dir not in design_system_dir.parents:
+        raise ValueError("Resolved project path escapes the design-system directory")
+    if any(design_system_dir not in target.resolve().parents for target in targets):
+        raise ValueError("Resolved output path escapes the project design-system directory")
+
+    conflicts = [target for target in targets if target.exists()]
+    if conflicts and not overwrite:
+        conflict_list = "\n".join(f"- {path}" for path in conflicts)
+        raise FileExistsError(
+            "Design system files already exist; no files were written. "
+            "Use --force to overwrite:\n" + conflict_list
+        )
+
+    master_content = format_master_md(design_system)
+    page_content = format_page_override_md(design_system, page, page_query) if page_file else None
+
+    design_system_dir.mkdir(parents=True, exist_ok=True)
+    if page_file:
+        pages_dir.mkdir(parents=True, exist_ok=True)
+
+    created_files = []
+    updated_files = []
+    for target, content in [(master_file, master_content), (page_file, page_content)]:
+        if target is None:
+            continue
+        existed = target.exists()
+        target.write_text(content, encoding="utf-8")
+        (updated_files if existed else created_files).append(str(target))
+
     return {
         "status": "success",
         "design_system_dir": str(design_system_dir),
-        "created_files": created_files
+        "created_files": created_files,
+        "updated_files": updated_files,
+        "master_file": str(master_file),
+        "page_file": str(page_file) if page_file else None
     }
+
+def _slugify_path_component(value: str, fallback: str) -> str:
+    """将用户名称转换为安全、稳定的单个路径片段。"""
+    normalized = unicodedata.normalize("NFKC", str(value or "")).lower()
+    normalized = re.sub(r"[\s_]+", "-", normalized)
+    normalized = "".join(char for char in normalized if char == "-" or char.isalnum())
+    normalized = re.sub(r"-+", "-", normalized).strip("-")
+    return normalized or fallback
+
+
+def _format_component_specs(colors: dict) -> str:
+    return f"""### Buttons
+
+```css
+.btn-primary {{
+  background: {colors.get("cta", "#F97316")};
+  color: white;
+  padding: 12px 24px;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
+}}
+
+.btn-primary:active {{
+  transform: scale(0.97);
+}}
+```
+
+### Cards
+
+```css
+.card {{
+  background: {colors.get("background", "#FFFFFF")};
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}}
+
+.card-interactive {{
+  cursor: pointer;
+  transition: transform var(--duration-default) var(--ease-out), box-shadow var(--duration-default) var(--ease-out);
+}}
+
+@media (hover: hover) and (pointer: fine) {{
+  .card-interactive:hover {{
+    transform: translateY(-2px);
+    box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1);
+  }}
+}}
+```
+
+Use `.card-interactive` only on semantic links, buttons, or keyboard-accessible interactive containers. Plain `.card` surfaces remain static."""
 
 
 def format_master_md(design_system: dict) -> str:
-    """Format design system as MASTER.md with hierarchical override logic."""
+    """使用 MASTER-TEMPLATE.md 渲染项目设计系统。"""
+    if not TEMPLATE_FILE.exists():
+        raise FileNotFoundError(f"Design system template not found: {TEMPLATE_FILE}")
+
     project = design_system.get("project_name", "PROJECT")
     pattern = design_system.get("pattern", {})
     style = design_system.get("style", {})
     colors = design_system.get("colors", {})
-    typography = design_system.get("typography", {})
+    typography = {**DEFAULT_TYPOGRAPHY, **design_system.get("typography", {})}
     effects = design_system.get("key_effects", "")
     anti_patterns = design_system.get("anti_patterns", "")
-    
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    lines = []
-    
-    # Logic header
-    lines.append("# Design System Master File")
-    lines.append("")
-    lines.append("> **LOGIC:** When building a specific page, first check `design-system/pages/[page-name].md`.")
-    lines.append("> If that file exists, its rules **override** this Master file.")
-    lines.append("> If not, strictly follow the rules below.")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-    lines.append(f"**Project:** {project}")
-    lines.append(f"**Generated:** {timestamp}")
-    lines.append(f"**Category:** {design_system.get('category', 'General')}")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
-    
-    # Global Rules section
-    lines.append("## Global Rules")
-    lines.append("")
-    
-    # Color Palette
-    lines.append("### Color Palette")
-    lines.append("")
-    lines.append("| Role | Hex | CSS Variable |")
-    lines.append("|------|-----|--------------|")
-    lines.append(f"| Primary | `{colors.get('primary', '#2563EB')}` | `--color-primary` |")
-    lines.append(f"| Secondary | `{colors.get('secondary', '#3B82F6')}` | `--color-secondary` |")
-    lines.append(f"| CTA/Accent | `{colors.get('cta', '#F97316')}` | `--color-cta` |")
-    lines.append(f"| Background | `{colors.get('background', '#F8FAFC')}` | `--color-background` |")
-    lines.append(f"| Text | `{colors.get('text', '#1E293B')}` | `--color-text` |")
-    lines.append("")
-    if colors.get("notes"):
-        lines.append(f"**Color Notes:** {colors.get('notes', '')}")
-        lines.append("")
-    
-    # Typography
-    lines.append("### Typography")
-    lines.append("")
-    lines.append(f"- **Heading Font:** {typography.get('heading', 'Inter')}")
-    lines.append(f"- **Body Font:** {typography.get('body', 'Inter')}")
-    if typography.get("mood"):
-        lines.append(f"- **Mood:** {typography.get('mood', '')}")
-    if typography.get("google_fonts_url"):
-        lines.append(f"- **Google Fonts:** [{typography.get('heading', '')} + {typography.get('body', '')}]({typography.get('google_fonts_url', '')})")
-    lines.append("")
-    if typography.get("css_import"):
-        lines.append("**CSS Import:**")
-        lines.append("```css")
-        lines.append(typography.get("css_import", ""))
-        lines.append("```")
-        lines.append("")
-    
-    # Spacing Variables
-    lines.append("### Spacing Variables")
-    lines.append("")
-    lines.append("| Token | Value | Usage |")
-    lines.append("|-------|-------|-------|")
-    lines.append("| `--space-xs` | `4px` / `0.25rem` | Tight gaps |")
-    lines.append("| `--space-sm` | `8px` / `0.5rem` | Icon gaps, inline spacing |")
-    lines.append("| `--space-md` | `16px` / `1rem` | Standard padding |")
-    lines.append("| `--space-lg` | `24px` / `1.5rem` | Section padding |")
-    lines.append("| `--space-xl` | `32px` / `2rem` | Large gaps |")
-    lines.append("| `--space-2xl` | `48px` / `3rem` | Section margins |")
-    lines.append("| `--space-3xl` | `64px` / `4rem` | Hero padding |")
-    lines.append("")
-    
-    # Shadow Depths
-    lines.append("### Shadow Depths")
-    lines.append("")
-    lines.append("| Level | Value | Usage |")
-    lines.append("|-------|-------|-------|")
-    lines.append("| `--shadow-sm` | `0 1px 2px rgba(0,0,0,0.05)` | Subtle lift |")
-    lines.append("| `--shadow-md` | `0 4px 6px rgba(0,0,0,0.1)` | Cards, buttons |")
-    lines.append("| `--shadow-lg` | `0 10px 15px rgba(0,0,0,0.1)` | Modals, dropdowns |")
-    lines.append("| `--shadow-xl` | `0 20px 25px rgba(0,0,0,0.15)` | Hero images, featured cards |")
-    lines.append("")
-    
-    # Component Specs section
-    lines.append("---")
-    lines.append("")
-    lines.append("## Component Specs")
-    lines.append("")
-    
-    # Buttons
-    lines.append("### Buttons")
-    lines.append("")
-    lines.append("```css")
-    lines.append("/* Primary Button */")
-    lines.append(".btn-primary {")
-    lines.append(f"  background: {colors.get('cta', '#F97316')};")
-    lines.append("  color: white;")
-    lines.append("  padding: 12px 24px;")
-    lines.append("  border-radius: 8px;")
-    lines.append("  font-weight: 600;")
-    lines.append("  transition: all 200ms ease;")
-    lines.append("  cursor: pointer;")
-    lines.append("}")
-    lines.append("")
-    lines.append(".btn-primary:hover {")
-    lines.append("  opacity: 0.9;")
-    lines.append("  transform: translateY(-1px);")
-    lines.append("}")
-    lines.append("")
-    lines.append("/* Secondary Button */")
-    lines.append(".btn-secondary {")
-    lines.append(f"  background: transparent;")
-    lines.append(f"  color: {colors.get('primary', '#2563EB')};")
-    lines.append(f"  border: 2px solid {colors.get('primary', '#2563EB')};")
-    lines.append("  padding: 12px 24px;")
-    lines.append("  border-radius: 8px;")
-    lines.append("  font-weight: 600;")
-    lines.append("  transition: all 200ms ease;")
-    lines.append("  cursor: pointer;")
-    lines.append("}")
-    lines.append("```")
-    lines.append("")
-    
-    # Cards
-    lines.append("### Cards")
-    lines.append("")
-    lines.append("```css")
-    lines.append(".card {")
-    lines.append(f"  background: {colors.get('background', '#FFFFFF')};")
-    lines.append("  border-radius: 12px;")
-    lines.append("  padding: 24px;")
-    lines.append("  box-shadow: var(--shadow-md);")
-    lines.append("  transition: all 200ms ease;")
-    lines.append("  cursor: pointer;")
-    lines.append("}")
-    lines.append("")
-    lines.append(".card:hover {")
-    lines.append("  box-shadow: var(--shadow-lg);")
-    lines.append("  transform: translateY(-2px);")
-    lines.append("}")
-    lines.append("```")
-    lines.append("")
-    
-    # Inputs
-    lines.append("### Inputs")
-    lines.append("")
-    lines.append("```css")
-    lines.append(".input {")
-    lines.append("  padding: 12px 16px;")
-    lines.append("  border: 1px solid #E2E8F0;")
-    lines.append("  border-radius: 8px;")
-    lines.append("  font-size: 16px;")
-    lines.append("  transition: border-color 200ms ease;")
-    lines.append("}")
-    lines.append("")
-    lines.append(".input:focus {")
-    lines.append(f"  border-color: {colors.get('primary', '#2563EB')};")
-    lines.append("  outline: none;")
-    lines.append(f"  box-shadow: 0 0 0 3px {colors.get('primary', '#2563EB')}20;")
-    lines.append("}")
-    lines.append("```")
-    lines.append("")
-    
-    # Modals
-    lines.append("### Modals")
-    lines.append("")
-    lines.append("```css")
-    lines.append(".modal-overlay {")
-    lines.append("  background: rgba(0, 0, 0, 0.5);")
-    lines.append("  backdrop-filter: blur(4px);")
-    lines.append("}")
-    lines.append("")
-    lines.append(".modal {")
-    lines.append("  background: white;")
-    lines.append("  border-radius: 16px;")
-    lines.append("  padding: 32px;")
-    lines.append("  box-shadow: var(--shadow-xl);")
-    lines.append("  max-width: 500px;")
-    lines.append("  width: 90%;")
-    lines.append("}")
-    lines.append("```")
-    lines.append("")
-    
-    # Style section
-    lines.append("---")
-    lines.append("")
-    lines.append("## Style Guidelines")
-    lines.append("")
-    lines.append(f"**Style:** {style.get('name', 'Minimalism')}")
-    lines.append("")
-    if style.get("keywords"):
-        lines.append(f"**Keywords:** {style.get('keywords', '')}")
-        lines.append("")
-    if style.get("best_for"):
-        lines.append(f"**Best For:** {style.get('best_for', '')}")
-        lines.append("")
-    if effects:
-        lines.append(f"**Key Effects:** {effects}")
-        lines.append("")
-    
-    # Layout Pattern
-    lines.append("### Page Pattern")
-    lines.append("")
-    lines.append(f"**Pattern Name:** {pattern.get('name', '')}")
-    lines.append("")
-    if pattern.get('conversion'):
-        lines.append(f"- **Conversion Strategy:** {pattern.get('conversion', '')}")
-    if pattern.get('cta_placement'):
-        lines.append(f"- **CTA Placement:** {pattern.get('cta_placement', '')}")
-    lines.append(f"- **Section Order:** {pattern.get('sections', '')}")
-    lines.append("")
-    
-    # Anti-Patterns section
-    lines.append("---")
-    lines.append("")
-    lines.append("## Anti-Patterns (Do NOT Use)")
-    lines.append("")
-    if anti_patterns:
-        anti_list = [a.strip() for a in anti_patterns.split("+")]
-        for anti in anti_list:
-            if anti:
-                lines.append(f"- ❌ {anti}")
-    lines.append("")
-    lines.append("### Additional Forbidden Patterns")
-    lines.append("")
-    lines.append("- ❌ **Emojis as icons** — Use SVG icons (Heroicons, Lucide, Simple Icons)")
-    lines.append("- ❌ **Missing cursor:pointer** — All clickable elements must have cursor:pointer")
-    lines.append("- ❌ **Layout-shifting hovers** — Avoid scale transforms that shift layout")
-    lines.append("- ❌ **Low contrast text** — Maintain 4.5:1 minimum contrast ratio")
-    lines.append("- ❌ **Instant state changes** — Always use transitions (150-300ms)")
-    lines.append("- ❌ **Invisible focus states** — Focus states must be visible for a11y")
-    lines.append("")
-    
-    # Pre-Delivery Checklist
-    lines.append("---")
-    lines.append("")
-    lines.append("## Pre-Delivery Checklist")
-    lines.append("")
-    lines.append("Before delivering any UI code, verify:")
-    lines.append("")
-    lines.append("- [ ] No emojis used as icons (use SVG instead)")
-    lines.append("- [ ] All icons from consistent icon set (Heroicons/Lucide)")
-    lines.append("- [ ] `cursor-pointer` on all clickable elements")
-    lines.append("- [ ] Hover states with smooth transitions (150-300ms)")
-    lines.append("- [ ] Light mode: text contrast 4.5:1 minimum")
-    lines.append("- [ ] Focus states visible for keyboard navigation")
-    lines.append("- [ ] `prefers-reduced-motion` respected")
-    lines.append("- [ ] Responsive: 375px, 768px, 1024px, 1440px")
-    lines.append("- [ ] No content hidden behind fixed navbars")
-    lines.append("- [ ] No horizontal scroll on mobile")
-    lines.append("")
-    
-    return "\n".join(lines)
 
+    color_table = "\n".join([
+        "| Role | Hex | CSS Variable |",
+        "| --- | --- | --- |",
+        f"| Primary | `{colors.get('primary', '#2563EB')}` | `--color-primary` |",
+        f"| Secondary | `{colors.get('secondary', '#3B82F6')}` | `--color-secondary` |",
+        f"| CTA / Accent | `{colors.get('cta', '#F97316')}` | `--color-cta` |",
+        f"| Background | `{colors.get('background', '#F8FAFC')}` | `--color-background` |",
+        f"| Text | `{colors.get('text', '#1E293B')}` | `--color-text` |"
+    ])
+    color_notes = f"**Color Notes:** {colors.get('notes')}" if colors.get("notes") else "Use existing project semantic tokens when available."
+
+    typography_lines = [
+        f"- **Heading Font:** {typography['heading']}",
+        f"- **Body Font:** {typography['body']}",
+        f"- **Mood:** {typography['mood']}",
+        f"- **Best For:** {typography['best_for']}"
+    ]
+    if typography.get("google_fonts_url"):
+        typography_lines.append(f"- **Font Source:** {typography['google_fonts_url']}")
+    if typography.get("css_import"):
+        typography_lines.extend(["", "```css", typography["css_import"], "```"])
+
+    style_lines = [f"**Style:** {style.get('name', 'Contextual')}"]
+    if style.get("keywords"):
+        style_lines.append(f"**Keywords:** {style['keywords']}")
+    if style.get("best_for"):
+        style_lines.append(f"**Best For:** {style['best_for']}")
+    if effects:
+        style_lines.append(f"**Key Effects:** {effects}")
+
+    page_lines = [f"- **Pattern Name:** {pattern.get('name', '')}"]
+    if pattern.get("conversion"):
+        page_lines.append(f"- **Conversion Strategy:** {pattern['conversion']}")
+    if pattern.get("cta_placement"):
+        page_lines.append(f"- **CTA Placement:** {pattern['cta_placement']}")
+    page_lines.append(f"- **Section Order:** {pattern.get('sections', '')}")
+
+    anti_lines = []
+    for item in anti_patterns.split("+") if anti_patterns else []:
+        if item.strip():
+            anti_lines.append(f"- Do not: {item.strip()}")
+    anti_lines.extend([
+        "- Do not use emoji as UI icons; use one consistent SVG icon set.",
+        "- Do not add pointer cursors or hover lift to static cards.",
+        "- Do not use `transition: all`.",
+        "- Do not remove focus indicators without an accessible replacement."
+    ])
+
+    checklist = "\n".join([
+        "- [ ] Reused existing project tokens and components where available",
+        "- [ ] Static and interactive surfaces have truthful affordances",
+        "- [ ] Keyboard focus and touch targets are usable",
+        "- [ ] Reduced Motion preserves task completion",
+        "- [ ] Tested real content at 375px, 768px, 1024px and 1440px",
+        "- [ ] No unexpected horizontal scroll or fixed-layer obstruction"
+    ])
+
+    template = Template(TEMPLATE_FILE.read_text(encoding="utf-8"))
+    return template.substitute(
+        project=project,
+        generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        category=design_system.get("category", "General"),
+        color_table=color_table,
+        color_notes=color_notes,
+        typography_block="\n".join(typography_lines),
+        component_specs=_format_component_specs(colors),
+        style_guidelines="\n\n".join(style_lines),
+        page_pattern="\n".join(page_lines),
+        anti_patterns="\n".join(anti_lines),
+        verification_checklist=checklist
+    )
 
 def format_page_override_md(design_system: dict, page_name: str, page_query: str = None) -> str:
     """Format a page-specific override file with intelligent AI-generated content."""
@@ -819,7 +717,7 @@ def format_page_override_md(design_system: dict, page_name: str, page_query: str
     lines.append(f"> **Generated:** {timestamp}")
     lines.append(f"> **Page Type:** {page_overrides.get('page_type', 'General')}")
     lines.append("")
-    lines.append("> ⚠️ **IMPORTANT:** Rules in this file **override** the Master file (`design-system/MASTER.md`).")
+    lines.append("> **IMPORTANT:** Rules in this file **override** [`MASTER.md`](../MASTER.md).")
     lines.append("> Only deviations from the Master are documented here. For all other rules, refer to the Master.")
     lines.append("")
     lines.append("---")
@@ -1026,7 +924,8 @@ def _detect_page_type(context: str, style_results: list) -> str:
         (["dashboard", "admin", "analytics", "data", "metrics", "stats", "monitor", "overview"], "Dashboard / Data View"),
         (["checkout", "payment", "cart", "purchase", "order", "billing"], "Checkout / Payment"),
         (["settings", "profile", "account", "preferences", "config"], "Settings / Profile"),
-        (["landing", "marketing", "homepage", "hero", "home", "promo"], "Landing / Marketing"),
+        (["homepage", "home page", "personal homepage", "主页", "首页"], "Homepage"),
+        (["landing", "marketing", "campaign", "hero", "promo"], "Landing / Marketing"),
         (["login", "signin", "signup", "register", "auth", "password"], "Authentication"),
         (["pricing", "plans", "subscription", "tiers", "packages"], "Pricing / Plans"),
         (["blog", "article", "post", "news", "content", "story"], "Blog / Article"),

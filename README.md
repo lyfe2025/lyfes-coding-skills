@@ -2,7 +2,7 @@
 
 专注于代码开发的 AI 编程 Skills 集合（中文版）。
 
-覆盖完整开发工作流：需求分析 → 计划编写 → TDD 开发 → 代码审查 → 分支完成。
+覆盖前端设计实现与完整开发工作流：设计探索 → 需求分析 → 计划编写 → TDD 开发 → 代码审查 → 分支完成。
 
 兼容 Claude Code / Codex / Cursor 等 AI 编程工具。
 
@@ -10,9 +10,56 @@
 
 | Skill | 功能 |
 |-------|------|
-| **frontend-master** | 大师级前端开发，反 AI 审美，设计系统持久化 |
+| **frontend-master** | 高质量前端设计与实现统一入口，支持设计研究、交互动效规范、实际验证和设计系统持久化 |
 | **skill-creator** | Skill 初始化/打包工具 |
 | **superpowers** | 完整开发工作流（14 个子技能） |
+
+## frontend-master
+
+`frontend-master` 用于创建、重构或精修主页、个人品牌页、作品集、Landing Page、Dashboard、表单、卡片、导航及其他 Web UI。它会优先分析项目现有技术栈和设计系统，而不是直接套用固定页面结构或流行视觉风格。
+
+### 六阶段设计流程
+
+1. **Recon**：分析技术栈、现有组件、设计 token 和项目约束
+2. **Frame**：明确用户、目标、内容层级、核心行动和视觉方向
+3. **Research**：搜索设计数据库，将结果作为候选而非标准答案
+4. **Craft**：完成设计、实现、组件状态、响应式和动效精修
+5. **Persist**：按需、安全地生成或更新项目设计系统
+6. **Verify**：运行项目并验证页面、交互、可访问性和异常内容
+
+### 设计质量基线
+
+- **模板设计**：根据内容叙事选择结构，避免默认套用 `Hero > Features > Testimonials > CTA`
+- **交互质感**：区分静态与交互元素，覆盖 hover、focus、disabled、loading、error 等状态
+- **动效质量**：先判断动画是否必要，优先使用 `transform` 和 `opacity`，支持 Reduced Motion
+- **响应式设计**：分别组织桌面端与移动端信息，而不是简单等比例缩小
+- **真实验证**：检查 375 / 768 / 1024 / 1440px、键盘、触控、长内容、缺图、控制台及项目自身命令
+- **专项路由**：按需调用交互、物理动效、动效命名或审计类 Skill，不会每次加载全部能力
+
+### 设计数据库与持久化
+
+仅搜索设计建议：
+
+```bash
+python3 skills/frontend-master/scripts/search.py "个人品牌主页" --design-system
+```
+
+生成设计系统并保存 MASTER 与页面 override：
+
+```bash
+python3 skills/frontend-master/scripts/search.py "个人品牌主页" \
+  --design-system \
+  --persist \
+  -p "名片岛" \
+  --page "设计师主页"
+```
+
+默认不会覆盖已有文件；确认需要更新时显式添加 `--force`。生成结果位于：
+
+```text
+design-system/<project-slug>/MASTER.md
+design-system/<project-slug>/pages/<page-slug>.md
+```
 
 <details>
 <summary><b>superpowers 子技能详情</b></summary>

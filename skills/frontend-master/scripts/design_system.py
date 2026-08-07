@@ -5,25 +5,31 @@ Design System Generator - Aggregates search results and applies reasoning
 to generate comprehensive design system recommendations.
 
 Usage:
-    from design_system import generate_design_system
-    result = generate_design_system("SaaS dashboard", "My Project")
-    
+    from design_system import generate_design_system, generate_design_system_result
+    text = generate_design_system("SaaS dashboard", "My Project")
+    result = generate_design_system_result(
+        "SaaS dashboard", "My Project", variance=8, motion=6, density=7
+    )
+
     # With persistence (Master + Overrides pattern)
-    result = generate_design_system("SaaS dashboard", "My Project", persist=True)
-    result = generate_design_system("SaaS dashboard", "My Project", persist=True, page="dashboard")
+    text = generate_design_system(
+        "SaaS dashboard", "My Project", persist=True,
+        page="dashboard", output_dir="/path/to/project"
+    )
 """
 
 import csv
 import json
+import os
 import re
+import sys
 import unicodedata
+import io
 from datetime import datetime
 from pathlib import Path
 from string import Template
 from core import search, DATA_DIR
 
-
-TEMPLATE_FILE = Path(__file__).parent.parent / "templates" / "MASTER-TEMPLATE.md"
 DEFAULT_TYPOGRAPHY = {
     "heading": "Source Serif 4",
     "body": "Noto Sans",
@@ -34,7 +40,15 @@ DEFAULT_TYPOGRAPHY = {
 }
 
 
+# Force UTF-8 for stdout/stderr to handle emojis/box-drawing chars on Windows (cp1252 default)
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+if sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
+
 # ============ CONFIGURATION ============
+TEMPLATE_FILE = Path(__file__).parent.parent / "templates" / "MASTER-TEMPLATE.md"
 REASONING_FILE = "ui-reasoning.csv"
 
 SEARCH_CONFIG = {
@@ -44,6 +58,141 @@ SEARCH_CONFIG = {
     "landing": {"max_results": 2},
     "typography": {"max_results": 2}
 }
+
+# ============ DESIGN DIALS (1-10) ============
+# Inspired by taste-skill's DESIGN_VARIANCE / MOTION_INTENSITY / VISUAL_DENSITY
+# knobs: three optional 1-10 sliders that bias the existing query-based search
+# instead of replacing it. Each dial buckets into a low/mid/high tier.
+DIAL_TIERS = {
+    "variance": [
+        (1, 3, {"label": "Centered / Minimal", "style_keywords": ["Minimalism", "Exaggerated Minimalism", "centered", "symmetric", "grid-based"]}),
+        (4, 7, {"label": "Balanced / Modern", "style_keywords": ["modern", "structured", "balanced"]}),
+        (8, 10, {"label": "Bold / Asymmetric", "style_keywords": ["Brutalism", "Bento Grids", "asymmetric", "experimental"]}),
+    ],
+    "motion": [
+        (1, 3, {"label": "Subtle", "tier": "Subtle"}),
+        (4, 7, {"label": "Standard", "tier": "Standard"}),
+        (8, 10, {"label": "Complex", "tier": "Complex"}),
+    ],
+    "density": [
+        (1, 3, {"label": "Spacious", "spacing": {"xs": "4px", "sm": "8px", "md": "24px", "lg": "32px", "xl": "48px", "2xl": "64px", "3xl": "96px"}}),
+        (4, 7, {"label": "Standard", "spacing": {"xs": "4px", "sm": "8px", "md": "16px", "lg": "24px", "xl": "32px", "2xl": "48px", "3xl": "64px"}}),
+        (8, 10, {"label": "Dense / Dashboard", "spacing": {"xs": "2px", "sm": "4px", "md": "8px", "lg": "12px", "xl": "16px", "2xl": "24px", "3xl": "32px"}}),
+    ],
+}
+
+
+def _resolve_dial(dial_name: str, value) -> dict:
+    """Bucket a 1-10 dial value into its tier config. Returns None if value is None."""
+    if value is None:
+        return None
+    value = max(1, min(10, int(value)))
+    for lo, hi, info in DIAL_TIERS[dial_name]:
+        if lo <= value <= hi:
+            return {**info, "value": value}
+    return None
+
+
+# ============ COLOR MODE RESOLUTION ============
+# Style, palette and anti-patterns are resolved from separate CSVs. Without a
+# shared notion of "which mode did we land on", a dark-primary style can be
+# paired with a light palette and a "don't use dark mode" anti-pattern.
+
+# Phrases in styles.csv "Light Mode ✓" / "Dark Mode ✓" that mark a style as
+# dark-first rather than merely dark-capable ("✓ Full" means both work).
+_DARK_PRIMARY_MARKERS = (
+    "dark mode primary", "dark primary", "dark-only", "dark only",
+    "dark preferred", "dark focused", "dark-first", "dark rich",
+    "light mode only as exception",
+)
+
+# Query phrases that are an explicit request for a dark theme.
+_DARK_QUERY_MARKERS = (
+    "dark mode", "dark theme", "dark ui", "dark-mode", "darkmode",
+    "night mode", "midnight", "oled",
+)
+
+# Anti-pattern clauses that contradict a resolved dark mode.
+_DARK_ANTI_PATTERN_MARKERS = ("dark mode", "dark modes", "dark theme")
+
+# Relative luminance below which a Background hex counts as a dark surface.
+# #1F2937 (the lightest dark background in colors.csv) sits at ~0.026 and
+# #E8ECF1 (the darkest light background) at ~0.79, so the gap is wide.
+_DARK_BACKGROUND_MAX_LUMINANCE = 0.18
+
+
+def _relative_luminance(hex_color: str):
+    """WCAG relative luminance of a #RRGGBB string, or None if unparseable."""
+    if not hex_color:
+        return None
+    value = hex_color.strip().lstrip("#")
+    if len(value) == 3:
+        value = "".join(c * 2 for c in value)
+    if len(value) != 6:
+        return None
+    try:
+        channels = [int(value[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    except ValueError:
+        return None
+    linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+              for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _palette_is_dark(palette: dict) -> bool:
+    """True when a colors.csv row's Background is a dark surface."""
+    luminance = _relative_luminance((palette or {}).get("Background", ""))
+    return luminance is not None and luminance < _DARK_BACKGROUND_MAX_LUMINANCE
+
+
+def _style_is_dark_primary(style: dict) -> bool:
+    """True when a styles.csv row describes itself as dark-first."""
+    if not style:
+        return False
+    declared = "{} {}".format(
+        style.get("Light Mode ✓", ""), style.get("Dark Mode ✓", "")
+    ).lower()
+    return any(marker in declared for marker in _DARK_PRIMARY_MARKERS)
+
+
+def _query_wants_dark(query: str) -> bool:
+    """True when the query explicitly asks for a dark theme."""
+    lowered = (query or "").lower()
+    return any(marker in lowered for marker in _DARK_QUERY_MARKERS)
+
+
+def _resolve_color_mode(query: str, style: dict) -> str:
+    """Resolve the mode the rest of the output has to agree with."""
+    if _query_wants_dark(query) or _style_is_dark_primary(style):
+        return "dark"
+    return "light"
+
+
+def _select_palette_for_mode(palettes: list, mode: str) -> dict:
+    """Pick the highest-ranked palette matching the resolved mode.
+
+    Only the dark case filters. Light is left on the existing "top hit wins"
+    behaviour so queries that never mention a mode keep their current palette.
+    Falls back to the top hit when the data has no matching ramp.
+    """
+    if not palettes:
+        return {}
+    if mode == "dark":
+        for palette in palettes:
+            if _palette_is_dark(palette):
+                return palette
+    return palettes[0]
+
+
+def _filter_anti_patterns_for_mode(anti_patterns: str, mode: str) -> str:
+    """Drop "avoid dark mode" advice once dark mode is the resolved answer."""
+    if mode != "dark" or not anti_patterns:
+        return anti_patterns
+    kept = [
+        clause for clause in anti_patterns.split("+")
+        if not any(marker in clause.lower() for marker in _DARK_ANTI_PATTERN_MARKERS)
+    ]
+    return " + ".join(clause.strip() for clause in kept if clause.strip())
 
 
 # ============ DESIGN SYSTEM GENERATOR ============
@@ -173,8 +322,18 @@ class DesignSystemGenerator:
         """Extract results list from search result dict."""
         return search_result.get("results", [])
 
-    def generate(self, query: str, project_name: str = None) -> dict:
-        """Generate complete design system recommendation."""
+    def generate(self, query: str, project_name: str = None,
+                 variance: int = None, motion: int = None, density: int = None) -> dict:
+        """Generate complete design system recommendation.
+
+        variance/motion/density are optional 1-10 dials (see DIAL_TIERS) that bias
+        style selection, pull in a matching motion.csv snippet, and override the
+        spacing scale, without changing behavior when left unset.
+        """
+        variance_info = _resolve_dial("variance", variance)
+        motion_info = _resolve_dial("motion", motion)
+        density_info = _resolve_dial("density", density)
+
         # Step 1: First search product to get category
         product_result = search(query, "product", 1)
         product_results = product_result.get("results", [])
@@ -186,8 +345,14 @@ class DesignSystemGenerator:
         reasoning = self._apply_reasoning(category, {})
         style_priority = reasoning.get("style_priority", [])
 
+        # DESIGN_VARIANCE dial: bias style retrieval/selection toward
+        # centered-minimal (low) or bold-asymmetric (high) keywords.
+        effective_style_priority = style_priority
+        if variance_info:
+            effective_style_priority = variance_info["style_keywords"] + style_priority
+
         # Step 3: Multi-domain search with style priority hints
-        search_results = self._multi_domain_search(query, style_priority)
+        search_results = self._multi_domain_search(query, effective_style_priority)
         search_results["product"] = product_result  # Reuse product search
 
         # Step 4: Select best matches from each domain using priority
@@ -196,10 +361,27 @@ class DesignSystemGenerator:
         typography_results = self._extract_results(search_results.get("typography", {}))
         landing_results = self._extract_results(search_results.get("landing", {}))
 
-        best_style = self._select_best_match(style_results, reasoning.get("style_priority", []))
-        best_color = color_results[0] if color_results else {}
+        best_style = self._select_best_match(style_results, effective_style_priority)
+        # Resolve the mode from the style + query first, then pick a palette that
+        # agrees with it. Ranking colors independently is what let a dark-primary
+        # style ship with a light background.
+        color_mode = _resolve_color_mode(query, best_style)
+        best_color = _select_palette_for_mode(color_results, color_mode)
         best_typography = typography_results[0] if typography_results else {}
         best_landing = landing_results[0] if landing_results else {}
+
+        # MOTION_INTENSITY dial: pull a matching GSAP skeleton from motion.csv
+        # (domain key is "gsap", not "motion" - PR #296 already owns the "motion"
+        # domain for Emil Kowalski's motion-design principles, motion-principles.csv).
+        motion_snippet = {}
+        if motion_info:
+            motion_result = search(f"{query} {motion_info['tier']}", "gsap", 5)
+            motion_matches = motion_result.get("results", [])
+            tiered = [m for m in motion_matches if m.get("Intensity Tier") == motion_info["tier"]]
+            if tiered:
+                motion_snippet = tiered[0]
+            elif motion_matches:
+                motion_snippet = motion_matches[0]
 
         # Step 5: Build final recommendation
         # Combine effects from both reasoning and style search
@@ -224,36 +406,88 @@ class DesignSystemGenerator:
                 "keywords": best_style.get("Keywords", ""),
                 "best_for": best_style.get("Best For", ""),
                 "performance": best_style.get("Performance", ""),
-                "accessibility": best_style.get("Accessibility", "")
+                "accessibility": best_style.get("Accessibility", ""),
+                "light_mode": best_style.get("Light Mode ✓", ""),
+                "dark_mode": best_style.get("Dark Mode ✓", ""),
             },
             "colors": {
-                "primary": best_color.get("Primary (Hex)", "#2563EB"),
-                "secondary": best_color.get("Secondary (Hex)", "#3B82F6"),
-                "cta": best_color.get("CTA (Hex)", "#F97316"),
-                "background": best_color.get("Background (Hex)", "#F8FAFC"),
-                "text": best_color.get("Text (Hex)", "#1E293B"),
-                "notes": best_color.get("Notes", "")
+                "primary": best_color.get("Primary") or best_color.get("Primary (Hex)") or "#2563EB",
+                "on_primary": best_color.get("On Primary", ""),
+                "secondary": best_color.get("Secondary") or best_color.get("Secondary (Hex)") or "#3B82F6",
+                "accent": best_color.get("Accent") or best_color.get("CTA (Hex)") or "#F97316",
+                "background": best_color.get("Background") or best_color.get("Background (Hex)") or "#F8FAFC",
+                "foreground": best_color.get("Foreground") or best_color.get("Text (Hex)") or "#1E293B",
+                "muted": best_color.get("Muted", ""),
+                "border": best_color.get("Border", ""),
+                "destructive": best_color.get("Destructive", ""),
+                "ring": best_color.get("Ring", ""),
+                "notes": best_color.get("Notes", ""),
+                # Keep legacy keys for backward compat in MASTER.md
+                "cta": best_color.get("Accent") or best_color.get("CTA (Hex)") or "#F97316",
+                "text": best_color.get("Foreground") or best_color.get("Text (Hex)") or "#1E293B",
             },
             "typography": {
-                "heading": best_typography.get("Heading Font") or DEFAULT_TYPOGRAPHY["heading"],
-                "body": best_typography.get("Body Font") or DEFAULT_TYPOGRAPHY["body"],
-                "mood": best_typography.get("Mood/Style Keywords") or reasoning.get("typography_mood") or DEFAULT_TYPOGRAPHY["mood"],
-                "best_for": best_typography.get("Best For") or DEFAULT_TYPOGRAPHY["best_for"],
-                "google_fonts_url": best_typography.get("Google Fonts URL") or DEFAULT_TYPOGRAPHY["google_fonts_url"],
-                "css_import": best_typography.get("CSS Import") or DEFAULT_TYPOGRAPHY["css_import"]
+                "heading": best_typography.get("Heading Font", "Inter"),
+                "body": best_typography.get("Body Font", "Inter"),
+                "mood": best_typography.get("Mood/Style Keywords", reasoning.get("typography_mood", "")),
+                "best_for": best_typography.get("Best For", ""),
+                "google_fonts_url": best_typography.get("Google Fonts URL", ""),
+                "css_import": best_typography.get("CSS Import", "")
             },
             "key_effects": combined_effects,
-            "anti_patterns": reasoning.get("anti_patterns", ""),
+            "anti_patterns": _filter_anti_patterns_for_mode(
+                reasoning.get("anti_patterns", ""), color_mode
+            ),
             "decision_rules": reasoning.get("decision_rules", {}),
-            "severity": reasoning.get("severity", "MEDIUM")
+            "severity": reasoning.get("severity", "MEDIUM"),
+            "dials": {
+                "variance": variance_info["value"] if variance_info else None,
+                "variance_label": variance_info["label"] if variance_info else None,
+                "motion": motion_info["value"] if motion_info else None,
+                "motion_label": motion_info["label"] if motion_info else None,
+                "density": density_info["value"] if density_info else None,
+                "density_label": density_info["label"] if density_info else None,
+            },
+            "motion_snippet": motion_snippet,
+            "spacing_scale": density_info["spacing"] if density_info else None,
         }
 
 
 # ============ OUTPUT FORMATTERS ============
 BOX_WIDTH = 90  # Wider box for more content
 
+
+def hex_to_ansi(hex_color: str) -> str:
+    """Convert hex color to ANSI True Color swatch (██) with fallback."""
+    if not hex_color or not hex_color.startswith('#'):
+        return ""
+    colorterm = os.environ.get('COLORTERM', '')
+    if colorterm not in ('truecolor', '24bit'):
+        return ""
+    hex_color = hex_color.lstrip('#')
+    if len(hex_color) != 6:
+        return ""
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    return f"\033[38;2;{r};{g};{b}m██\033[0m "
+
+
+def ansi_ljust(s: str, width: int) -> str:
+    """Like str.ljust but accounts for zero-width ANSI escape sequences."""
+    import re
+    visible_len = len(re.sub(r'\033\[[0-9;]*m', '', s))
+    pad = width - visible_len
+    return s + (" " * max(0, pad))
+
+
+def section_header(name: str, width: int) -> str:
+    """Create a Unicode section separator: ├─── NAME ───...┤"""
+    label = f"─── {name} "
+    fill = "─" * (width - len(label) - 1)
+    return f"├{label}{fill}┤"
+
+
 def format_ascii_box(design_system: dict) -> str:
-    """Format design system as ASCII box with emojis (MCP-style)."""
+    """Format design system as Unicode box with ANSI color swatches."""
     project = design_system.get("project_name", "PROJECT")
     pattern = design_system.get("pattern", {})
     style = design_system.get("style", {})
@@ -261,6 +495,8 @@ def format_ascii_box(design_system: dict) -> str:
     typography = design_system.get("typography", {})
     effects = design_system.get("key_effects", "")
     anti_patterns = design_system.get("anti_patterns", "")
+    dials = design_system.get("dials", {})
+    motion_snippet = design_system.get("motion_snippet", {})
 
     def wrap_text(text: str, prefix: str, width: int) -> list:
         """Wrap long text into multiple lines."""
@@ -288,77 +524,114 @@ def format_ascii_box(design_system: dict) -> str:
     lines = []
     w = BOX_WIDTH - 1
 
-    lines.append("+" + "-" * w + "+")
-    lines.append(f"|  TARGET: {project} - RECOMMENDED DESIGN SYSTEM".ljust(BOX_WIDTH) + "|")
-    lines.append("+" + "-" * w + "+")
-    lines.append("|" + " " * BOX_WIDTH + "|")
+    # Header with double-line box
+    lines.append("╔" + "═" * w + "╗")
+    lines.append(ansi_ljust(f"║  TARGET: {project} - RECOMMENDED DESIGN SYSTEM", BOX_WIDTH) + "║")
+    lines.append("╚" + "═" * w + "╝")
+    lines.append("┌" + "─" * w + "┐")
+
+    # Design Dials section (only if at least one dial was set)
+    if any(dials.get(k) is not None for k in ("variance", "motion", "density")):
+        lines.append(section_header("DESIGN DIALS", BOX_WIDTH + 1))
+        if dials.get("variance") is not None:
+            lines.append(f"│  Variance: {dials['variance']}/10 — {dials['variance_label']}".ljust(BOX_WIDTH) + "│")
+        if dials.get("motion") is not None:
+            lines.append(f"│  Motion:   {dials['motion']}/10 — {dials['motion_label']}".ljust(BOX_WIDTH) + "│")
+        if dials.get("density") is not None:
+            lines.append(f"│  Density:  {dials['density']}/10 — {dials['density_label']}".ljust(BOX_WIDTH) + "│")
 
     # Pattern section
-    lines.append(f"|  PATTERN: {pattern.get('name', '')}".ljust(BOX_WIDTH) + "|")
+    lines.append(section_header("PATTERN", BOX_WIDTH + 1))
+    lines.append(f"│  Name: {pattern.get('name', '')}".ljust(BOX_WIDTH) + "│")
     if pattern.get('conversion'):
-        lines.append(f"|     Conversion: {pattern.get('conversion', '')}".ljust(BOX_WIDTH) + "|")
+        lines.append(f"│     Conversion: {pattern.get('conversion', '')}".ljust(BOX_WIDTH) + "│")
     if pattern.get('cta_placement'):
-        lines.append(f"|     CTA: {pattern.get('cta_placement', '')}".ljust(BOX_WIDTH) + "|")
-    lines.append("|     Sections:".ljust(BOX_WIDTH) + "|")
+        lines.append(f"│     CTA: {pattern.get('cta_placement', '')}".ljust(BOX_WIDTH) + "│")
+    lines.append("│     Sections:".ljust(BOX_WIDTH) + "│")
     for i, section in enumerate(sections, 1):
-        lines.append(f"|       {i}. {section}".ljust(BOX_WIDTH) + "|")
-    lines.append("|" + " " * BOX_WIDTH + "|")
+        lines.append(f"│       {i}. {section}".ljust(BOX_WIDTH) + "│")
 
     # Style section
-    lines.append(f"|  STYLE: {style.get('name', '')}".ljust(BOX_WIDTH) + "|")
+    lines.append(section_header("STYLE", BOX_WIDTH + 1))
+    lines.append(f"│  Name: {style.get('name', '')}".ljust(BOX_WIDTH) + "│")
+    light = style.get("light_mode", "")
+    dark = style.get("dark_mode", "")
+    if light or dark:
+        lines.append(f"│     Mode Support: Light {light}  Dark {dark}".ljust(BOX_WIDTH) + "│")
     if style.get("keywords"):
-        for line in wrap_text(f"Keywords: {style.get('keywords', '')}", "|     ", BOX_WIDTH):
-            lines.append(line.ljust(BOX_WIDTH) + "|")
+        for line in wrap_text(f"Keywords: {style.get('keywords', '')}", "│     ", BOX_WIDTH):
+            lines.append(line.ljust(BOX_WIDTH) + "│")
     if style.get("best_for"):
-        for line in wrap_text(f"Best For: {style.get('best_for', '')}", "|     ", BOX_WIDTH):
-            lines.append(line.ljust(BOX_WIDTH) + "|")
+        for line in wrap_text(f"Best For: {style.get('best_for', '')}", "│     ", BOX_WIDTH):
+            lines.append(line.ljust(BOX_WIDTH) + "│")
     if style.get("performance") or style.get("accessibility"):
         perf_a11y = f"Performance: {style.get('performance', '')} | Accessibility: {style.get('accessibility', '')}"
-        lines.append(f"|     {perf_a11y}".ljust(BOX_WIDTH) + "|")
-    lines.append("|" + " " * BOX_WIDTH + "|")
+        lines.append(f"│     {perf_a11y}".ljust(BOX_WIDTH) + "│")
 
-    # Colors section
-    lines.append("|  COLORS:".ljust(BOX_WIDTH) + "|")
-    lines.append(f"|     Primary:    {colors.get('primary', '')}".ljust(BOX_WIDTH) + "|")
-    lines.append(f"|     Secondary:  {colors.get('secondary', '')}".ljust(BOX_WIDTH) + "|")
-    lines.append(f"|     CTA:        {colors.get('cta', '')}".ljust(BOX_WIDTH) + "|")
-    lines.append(f"|     Background: {colors.get('background', '')}".ljust(BOX_WIDTH) + "|")
-    lines.append(f"|     Text:       {colors.get('text', '')}".ljust(BOX_WIDTH) + "|")
+    # Colors section (extended palette with ANSI swatches)
+    lines.append(section_header("COLORS", BOX_WIDTH + 1))
+    color_entries = [
+        ("Primary",      "primary",      "--color-primary"),
+        ("On Primary",   "on_primary",   "--color-on-primary"),
+        ("Secondary",    "secondary",    "--color-secondary"),
+        ("Accent/CTA",   "accent",       "--color-accent"),
+        ("Background",   "background",   "--color-background"),
+        ("Foreground",   "foreground",   "--color-foreground"),
+        ("Muted",        "muted",        "--color-muted"),
+        ("Border",       "border",       "--color-border"),
+        ("Destructive",  "destructive",  "--color-destructive"),
+        ("Ring",         "ring",         "--color-ring"),
+    ]
+    for label, key, css_var in color_entries:
+        hex_val = colors.get(key, "")
+        if not hex_val:
+            continue
+        swatch = hex_to_ansi(hex_val)
+        content = f"│     {swatch}{label + ':':14s} {hex_val:10s} ({css_var})"
+        lines.append(ansi_ljust(content, BOX_WIDTH) + "│")
     if colors.get("notes"):
-        for line in wrap_text(f"Notes: {colors.get('notes', '')}", "|     ", BOX_WIDTH):
-            lines.append(line.ljust(BOX_WIDTH) + "|")
-    lines.append("|" + " " * BOX_WIDTH + "|")
+        for line in wrap_text(f"Notes: {colors.get('notes', '')}", "│     ", BOX_WIDTH):
+            lines.append(line.ljust(BOX_WIDTH) + "│")
 
     # Typography section
-    lines.append(f"|  TYPOGRAPHY: {typography.get('heading', '')} / {typography.get('body', '')}".ljust(BOX_WIDTH) + "|")
+    lines.append(section_header("TYPOGRAPHY", BOX_WIDTH + 1))
+    lines.append(f"│  {typography.get('heading', '')} / {typography.get('body', '')}".ljust(BOX_WIDTH) + "│")
     if typography.get("mood"):
-        for line in wrap_text(f"Mood: {typography.get('mood', '')}", "|     ", BOX_WIDTH):
-            lines.append(line.ljust(BOX_WIDTH) + "|")
+        for line in wrap_text(f"Mood: {typography.get('mood', '')}", "│     ", BOX_WIDTH):
+            lines.append(line.ljust(BOX_WIDTH) + "│")
     if typography.get("best_for"):
-        for line in wrap_text(f"Best For: {typography.get('best_for', '')}", "|     ", BOX_WIDTH):
-            lines.append(line.ljust(BOX_WIDTH) + "|")
+        for line in wrap_text(f"Best For: {typography.get('best_for', '')}", "│     ", BOX_WIDTH):
+            lines.append(line.ljust(BOX_WIDTH) + "│")
     if typography.get("google_fonts_url"):
-        lines.append(f"|     Google Fonts: {typography.get('google_fonts_url', '')}".ljust(BOX_WIDTH) + "|")
+        lines.append(f"│     Google Fonts: {typography.get('google_fonts_url', '')}".ljust(BOX_WIDTH) + "│")
     if typography.get("css_import"):
-        lines.append(f"|     CSS Import: {typography.get('css_import', '')[:70]}...".ljust(BOX_WIDTH) + "|")
-    lines.append("|" + " " * BOX_WIDTH + "|")
+        lines.append(f"│     CSS Import: {typography.get('css_import', '')[:70]}...".ljust(BOX_WIDTH) + "│")
 
     # Key Effects section
     if effects:
-        lines.append("|  KEY EFFECTS:".ljust(BOX_WIDTH) + "|")
-        for line in wrap_text(effects, "|     ", BOX_WIDTH):
-            lines.append(line.ljust(BOX_WIDTH) + "|")
-        lines.append("|" + " " * BOX_WIDTH + "|")
+        lines.append(section_header("KEY EFFECTS", BOX_WIDTH + 1))
+        for line in wrap_text(effects, "│     ", BOX_WIDTH):
+            lines.append(line.ljust(BOX_WIDTH) + "│")
+
+    # Motion section (GSAP skeleton, only if --motion dial was set)
+    if motion_snippet:
+        lines.append(section_header("MOTION", BOX_WIDTH + 1))
+        lines.append(f"│  {motion_snippet.get('Category', '')} ({motion_snippet.get('Intensity Tier', '')})".ljust(BOX_WIDTH) + "│")
+        lines.append(f"│     Trigger: {motion_snippet.get('Trigger', '')} | Duration: {motion_snippet.get('Duration', '')} | Easing: {motion_snippet.get('Easing', '')}".ljust(BOX_WIDTH) + "│")
+        for line in wrap_text(f"GSAP: {motion_snippet.get('GSAP Snippet', '')}", "│     ", BOX_WIDTH):
+            lines.append(line.ljust(BOX_WIDTH) + "│")
+        if motion_snippet.get("Framework Notes"):
+            for line in wrap_text(f"Framework: {motion_snippet.get('Framework Notes', '')}", "│     ", BOX_WIDTH):
+                lines.append(line.ljust(BOX_WIDTH) + "│")
 
     # Anti-patterns section
     if anti_patterns:
-        lines.append("|  AVOID (Anti-patterns):".ljust(BOX_WIDTH) + "|")
-        for line in wrap_text(anti_patterns, "|     ", BOX_WIDTH):
-            lines.append(line.ljust(BOX_WIDTH) + "|")
-        lines.append("|" + " " * BOX_WIDTH + "|")
+        lines.append(section_header("AVOID", BOX_WIDTH + 1))
+        for line in wrap_text(anti_patterns, "│     ", BOX_WIDTH):
+            lines.append(line.ljust(BOX_WIDTH) + "│")
 
     # Pre-Delivery Checklist section
-    lines.append("|  PRE-DELIVERY CHECKLIST:".ljust(BOX_WIDTH) + "|")
+    lines.append(section_header("PRE-DELIVERY CHECKLIST", BOX_WIDTH + 1))
     checklist_items = [
         "[ ] No emojis as icons (use SVG: Heroicons/Lucide)",
         "[ ] cursor-pointer on all clickable elements",
@@ -369,10 +642,9 @@ def format_ascii_box(design_system: dict) -> str:
         "[ ] Responsive: 375px, 768px, 1024px, 1440px"
     ]
     for item in checklist_items:
-        lines.append(f"|     {item}".ljust(BOX_WIDTH) + "|")
-    lines.append("|" + " " * BOX_WIDTH + "|")
+        lines.append(f"│     {item}".ljust(BOX_WIDTH) + "│")
 
-    lines.append("+" + "-" * w + "+")
+    lines.append("└" + "─" * w + "┘")
 
     return "\n".join(lines)
 
@@ -386,10 +658,23 @@ def format_markdown(design_system: dict) -> str:
     typography = design_system.get("typography", {})
     effects = design_system.get("key_effects", "")
     anti_patterns = design_system.get("anti_patterns", "")
+    dials = design_system.get("dials", {})
+    motion_snippet = design_system.get("motion_snippet", {})
 
     lines = []
     lines.append(f"## Design System: {project}")
     lines.append("")
+
+    # Design Dials section (only if at least one dial was set)
+    if any(dials.get(k) is not None for k in ("variance", "motion", "density")):
+        lines.append("### Design Dials")
+        if dials.get("variance") is not None:
+            lines.append(f"- **Variance:** {dials['variance']}/10 — {dials['variance_label']}")
+        if dials.get("motion") is not None:
+            lines.append(f"- **Motion:** {dials['motion']}/10 — {dials['motion_label']}")
+        if dials.get("density") is not None:
+            lines.append(f"- **Density:** {dials['density']}/10 — {dials['density_label']}")
+        lines.append("")
 
     # Pattern section
     lines.append("### Pattern")
@@ -406,6 +691,10 @@ def format_markdown(design_system: dict) -> str:
     # Style section
     lines.append("### Style")
     lines.append(f"- **Name:** {style.get('name', '')}")
+    light = style.get("light_mode", "")
+    dark = style.get("dark_mode", "")
+    if light or dark:
+        lines.append(f"- **Mode Support:** Light {light} | Dark {dark}")
     if style.get('keywords'):
         lines.append(f"- **Keywords:** {style.get('keywords', '')}")
     if style.get('best_for'):
@@ -414,15 +703,26 @@ def format_markdown(design_system: dict) -> str:
         lines.append(f"- **Performance:** {style.get('performance', '')} | **Accessibility:** {style.get('accessibility', '')}")
     lines.append("")
 
-    # Colors section
+    # Colors section (extended palette)
     lines.append("### Colors")
-    lines.append(f"| Role | Hex |")
-    lines.append(f"|------|-----|")
-    lines.append(f"| Primary | {colors.get('primary', '')} |")
-    lines.append(f"| Secondary | {colors.get('secondary', '')} |")
-    lines.append(f"| CTA | {colors.get('cta', '')} |")
-    lines.append(f"| Background | {colors.get('background', '')} |")
-    lines.append(f"| Text | {colors.get('text', '')} |")
+    lines.append("| Role | Hex | CSS Variable |")
+    lines.append("|------|-----|--------------|")
+    md_color_entries = [
+        ("Primary",      "primary",      "--color-primary"),
+        ("On Primary",   "on_primary",   "--color-on-primary"),
+        ("Secondary",    "secondary",    "--color-secondary"),
+        ("Accent/CTA",   "accent",       "--color-accent"),
+        ("Background",   "background",   "--color-background"),
+        ("Foreground",   "foreground",   "--color-foreground"),
+        ("Muted",        "muted",        "--color-muted"),
+        ("Border",       "border",       "--color-border"),
+        ("Destructive",  "destructive",  "--color-destructive"),
+        ("Ring",         "ring",         "--color-ring"),
+    ]
+    for label, key, css_var in md_color_entries:
+        hex_val = colors.get(key, "")
+        if hex_val:
+            lines.append(f"| {label} | `{hex_val}` | `{css_var}` |")
     if colors.get("notes"):
         lines.append(f"\n*Notes: {colors.get('notes', '')}*")
     lines.append("")
@@ -450,6 +750,23 @@ def format_markdown(design_system: dict) -> str:
         lines.append(f"{effects}")
         lines.append("")
 
+    # Motion section (GSAP skeleton, only if --motion dial was set)
+    if motion_snippet:
+        lines.append("### Motion")
+        lines.append(f"**{motion_snippet.get('Category', '')}** ({motion_snippet.get('Intensity Tier', '')}) — Trigger: {motion_snippet.get('Trigger', '')} | Duration: {motion_snippet.get('Duration', '')} | Easing: `{motion_snippet.get('Easing', '')}`")
+        lines.append("```js")
+        lines.append(motion_snippet.get("GSAP Snippet", ""))
+        lines.append("```")
+        if motion_snippet.get("Framework Notes"):
+            lines.append(f"*Framework notes: {motion_snippet.get('Framework Notes', '')}*")
+        motion_do = motion_snippet.get("Do", "")
+        motion_dont = motion_snippet.get("Don't", "")
+        if motion_do:
+            lines.append(f"- ✅ {motion_do}")
+        if motion_dont:
+            lines.append(f"- ❌ {motion_dont}")
+        lines.append("")
+
     # Anti-patterns section
     if anti_patterns:
         lines.append("### Avoid (Anti-patterns)")
@@ -472,9 +789,10 @@ def format_markdown(design_system: dict) -> str:
 
 
 # ============ MAIN ENTRY POINT ============
-def generate_design_system(query: str, project_name: str = None, output_format: str = "ascii",
-                           persist: bool = False, page: str = None, output_dir: str = None,
-                           overwrite: bool = False) -> str:
+def generate_design_system_result(query: str, project_name: str = None, output_format: str = "ascii",
+                                  persist: bool = False, page: str = None, output_dir: str = None,
+                                  variance: int = None, motion: int = None, density: int = None,
+                                  force: bool = False, overwrite: bool = None) -> dict:
     """
     Main entry point for design system generation.
 
@@ -485,21 +803,54 @@ def generate_design_system(query: str, project_name: str = None, output_format: 
         persist: If True, save design system to design-system/ folder
         page: Optional page name for page-specific override file
         output_dir: Optional output directory (defaults to current working directory)
-        overwrite: Whether existing generated files may be replaced
+        variance: Optional 1-10 DESIGN_VARIANCE dial (1=centered/minimal, 10=bold/asymmetric)
+        motion: Optional 1-10 MOTION_INTENSITY dial, pulls a matching GSAP snippet from motion.csv
+        density: Optional 1-10 VISUAL_DENSITY dial, overrides the spacing scale (1=spacious, 10=dense)
+        force: If True, overwrite existing generated files; otherwise the local
+               persistence guard raises FileExistsError before writing
+        overwrite: Backward-compatible alias for force
 
     Returns:
-        Formatted design system string
+        dict with keys: "text" (formatted design system string), "design_system"
+        (raw dict, useful for --json callers), and "persistence" (result of
+        persist_design_system(), or None if persist=False)
     """
-    generator = DesignSystemGenerator()
-    design_system = generator.generate(query, project_name)
-    
-    # Persist to files if requested
-    if persist:
-        persist_design_system(design_system, page, output_dir, query, overwrite)
+    if overwrite is not None:
+        force = overwrite
 
-    if output_format == "markdown":
-        return format_markdown(design_system)
-    return format_ascii_box(design_system)
+    generator = DesignSystemGenerator()
+    design_system = generator.generate(query, project_name, variance=variance, motion=motion, density=density)
+
+    persistence_result = None
+    if persist:
+        persistence_result = persist_design_system(design_system, page, output_dir, query, overwrite=force)
+
+    text = format_markdown(design_system) if output_format == "markdown" else format_ascii_box(design_system)
+
+    return {
+        "text": text,
+        "design_system": design_system,
+        "persistence": persistence_result,
+    }
+
+
+def generate_design_system(query: str, project_name: str = None, output_format: str = "ascii",
+                           persist: bool = False, page: str = None, output_dir: str = None,
+                           overwrite: bool = False, variance: int = None, motion: int = None,
+                           density: int = None, force: bool = None) -> str:
+    """兼容旧 API：生成并返回格式化字符串。
+
+    结构化结果请使用 ``generate_design_system_result``。``force`` 是 CLI
+    兼容别名；未显式传入时使用本地的 ``overwrite`` 参数。
+    """
+    if force is not None:
+        overwrite = force
+    result = generate_design_system_result(
+        query, project_name, output_format, persist=persist, page=page,
+        output_dir=output_dir, variance=variance, motion=motion,
+        density=density, force=overwrite,
+    )
+    return result["text"]
 
 
 # ============ PERSISTENCE FUNCTIONS ============
@@ -575,8 +926,8 @@ def _format_component_specs(colors: dict) -> str:
 
 ```css
 .btn-primary {{
-  background: {colors.get("cta", "#F97316")};
-  color: white;
+  background: {colors.get("accent") or colors.get("cta", "#F97316")};
+  color: {colors.get("on_primary") or "white"};
   padding: 12px 24px;
   border-radius: 8px;
   font-weight: 600;
@@ -594,9 +945,10 @@ def _format_component_specs(colors: dict) -> str:
 ```css
 .card {{
   background: {colors.get("background", "#FFFFFF")};
+  color: {colors.get("foreground") or colors.get("text", "#1E293B")};
+  border: 1px solid {colors.get("border") or "rgba(0, 0, 0, 0.1)"};
   border-radius: 12px;
   padding: 24px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }}
 
 .card-interactive {{
@@ -627,16 +979,28 @@ def format_master_md(design_system: dict) -> str:
     typography = {**DEFAULT_TYPOGRAPHY, **design_system.get("typography", {})}
     effects = design_system.get("key_effects", "")
     anti_patterns = design_system.get("anti_patterns", "")
+    dials = design_system.get("dials", {})
+    motion_snippet = design_system.get("motion_snippet", {})
+    spacing_scale = design_system.get("spacing_scale")
 
-    color_table = "\n".join([
-        "| Role | Hex | CSS Variable |",
-        "| --- | --- | --- |",
-        f"| Primary | `{colors.get('primary', '#2563EB')}` | `--color-primary` |",
-        f"| Secondary | `{colors.get('secondary', '#3B82F6')}` | `--color-secondary` |",
-        f"| CTA / Accent | `{colors.get('cta', '#F97316')}` | `--color-cta` |",
-        f"| Background | `{colors.get('background', '#F8FAFC')}` | `--color-background` |",
-        f"| Text | `{colors.get('text', '#1E293B')}` | `--color-text` |"
-    ])
+    color_rows = [
+        ("Primary", "primary", "--color-primary"),
+        ("On Primary", "on_primary", "--color-on-primary"),
+        ("Secondary", "secondary", "--color-secondary"),
+        ("CTA / Accent", "accent", "--color-accent"),
+        ("Background", "background", "--color-background"),
+        ("Foreground", "foreground", "--color-foreground"),
+        ("Muted", "muted", "--color-muted"),
+        ("Border", "border", "--color-border"),
+        ("Destructive", "destructive", "--color-destructive"),
+        ("Focus Ring", "ring", "--color-ring"),
+    ]
+    color_table_lines = ["| Role | Hex | CSS Variable |", "| --- | --- | --- |"]
+    for label, key, css_variable in color_rows:
+        value = colors.get(key)
+        if value:
+            color_table_lines.append(f"| {label} | `{value}` | `{css_variable}` |")
+    color_table = "\n".join(color_table_lines)
     color_notes = f"**Color Notes:** {colors.get('notes')}" if colors.get("notes") else "Use existing project semantic tokens when available."
 
     typography_lines = [
@@ -657,6 +1021,22 @@ def format_master_md(design_system: dict) -> str:
         style_lines.append(f"**Best For:** {style['best_for']}")
     if effects:
         style_lines.append(f"**Key Effects:** {effects}")
+    if any(dials.get(key) is not None for key in ("variance", "motion", "density")):
+        style_lines.append("**Design Dials:**")
+        for key in ("variance", "motion", "density"):
+            if dials.get(key) is not None:
+                style_lines.append(f"- {key.title()}: {dials[key]}/10 — {dials.get(key + '_label', '')}")
+    if motion_snippet:
+        style_lines.extend([
+            "**Motion Recommendation:**",
+            f"- Pattern: {motion_snippet.get('Category', '')} ({motion_snippet.get('Intensity Tier', '')})",
+            f"- Trigger: {motion_snippet.get('Trigger', '')}",
+            f"- Duration / Easing: {motion_snippet.get('Duration', '')} / {motion_snippet.get('Easing', '')}",
+            "```js",
+            motion_snippet.get("GSAP Snippet", ""),
+            "```",
+            "Respect `prefers-reduced-motion` and preserve task completion without animation.",
+        ])
 
     page_lines = [f"- **Pattern Name:** {pattern.get('name', '')}"]
     if pattern.get("conversion"):
@@ -685,6 +1065,28 @@ def format_master_md(design_system: dict) -> str:
         "- [ ] No unexpected horizontal scroll or fixed-layer obstruction"
     ])
 
+    if spacing_scale:
+        spacing_rows = ["| Token | Value | Usage |", "| --- | --- | --- |"]
+        usage = {
+            "xs": "Tight gaps", "sm": "Icon gaps and inline spacing",
+            "md": "Standard padding", "lg": "Component spacing",
+            "xl": "Large gaps", "2xl": "Section margins", "3xl": "Hero padding",
+        }
+        for key in ("xs", "sm", "md", "lg", "xl", "2xl", "3xl"):
+            spacing_rows.append(f"| `--space-{key}` | `{spacing_scale[key]}` | {usage[key]} |")
+        spacing_table = "\n".join(spacing_rows)
+    else:
+        spacing_table = "\n".join([
+            "| Token | Value | Usage |", "| --- | --- | --- |",
+            "| `--space-xs` | `4px` | Tight gaps |",
+            "| `--space-sm` | `8px` | Icon gaps and inline spacing |",
+            "| `--space-md` | `16px` | Standard padding |",
+            "| `--space-lg` | `24px` | Component spacing |",
+            "| `--space-xl` | `32px` | Large gaps |",
+            "| `--space-2xl` | `48px` | Section margins |",
+            "| `--space-3xl` | `64px` | Hero padding |",
+        ])
+
     template = Template(TEMPLATE_FILE.read_text(encoding="utf-8"))
     return template.substitute(
         project=project,
@@ -693,6 +1095,7 @@ def format_master_md(design_system: dict) -> str:
         color_table=color_table,
         color_notes=color_notes,
         typography_block="\n".join(typography_lines),
+        spacing_table=spacing_table,
         component_specs=_format_component_specs(colors),
         style_guidelines="\n\n".join(style_lines),
         page_pattern="\n".join(page_lines),
@@ -924,8 +1327,7 @@ def _detect_page_type(context: str, style_results: list) -> str:
         (["dashboard", "admin", "analytics", "data", "metrics", "stats", "monitor", "overview"], "Dashboard / Data View"),
         (["checkout", "payment", "cart", "purchase", "order", "billing"], "Checkout / Payment"),
         (["settings", "profile", "account", "preferences", "config"], "Settings / Profile"),
-        (["homepage", "home page", "personal homepage", "主页", "首页"], "Homepage"),
-        (["landing", "marketing", "campaign", "hero", "promo"], "Landing / Marketing"),
+        (["landing", "marketing", "homepage", "hero", "home", "promo"], "Landing / Marketing"),
         (["login", "signin", "signup", "register", "auth", "password"], "Authentication"),
         (["pricing", "plans", "subscription", "tiers", "packages"], "Pricing / Plans"),
         (["blog", "article", "post", "news", "content", "story"], "Blog / Article"),
@@ -962,5 +1364,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    result = generate_design_system(args.query, args.project_name, args.format)
-    print(result)
+    print(generate_design_system(args.query, args.project_name, args.format))

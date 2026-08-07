@@ -38,6 +38,20 @@
 
 ### 设计数据库与持久化
 
+设计数据库已选择性同步 `ui-ux-pro-max-skill` v2.14.1，包含 84 种 UI styles、192 套语义色板、192 类产品、74 组字体搭配、161 条 UI reasoning rules，并新增 App interface、GSAP motion、Google Fonts 和 9 个技术栈数据集。
+
+可使用 `--variance`、`--motion`、`--density`（1–10）控制视觉差异度、动效强度和信息密度：
+
+```bash
+python3 skills/frontend-master/scripts/search.py "数据分析 Dashboard" \
+  --design-system \
+  --variance 8 \
+  --motion 6 \
+  --density 9
+```
+
+独立搜索域包括 `style`、`color`、`chart`、`landing`、`product`、`ux`、`typography`、`google-fonts`、`icons`、`gsap`、`react`、`web` 和 `app`。其中 `web` 保留 Web/ARIA 规则，`app` 用于 iOS、Android 和 React Native 界面规范。
+
 仅搜索设计建议：
 
 ```bash
@@ -158,7 +172,7 @@ skills/
 
 - [anthropics/skills](https://github.com/anthropics/skills)
 - [obra/superpowers](https://github.com/obra/superpowers)
-- [nextlevelbuilder/ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill)
+- [nextlevelbuilder/ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) — 选择性同步至 v2.14.1（`abb7f2f`），保留本仓库中文工作流与持久化约定
 
 ## License
 

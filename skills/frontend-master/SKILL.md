@@ -41,10 +41,26 @@ description: "高质量前端设计与实现的统一入口。用于创建、重
 ```bash
 python3 scripts/search.py "<项目类型> <行业> <关键词>" --design-system -p "<项目名>"
 python3 scripts/search.py "<关键词>" --domain style
+python3 scripts/search.py "<动效需求>" --domain gsap
+python3 scripts/search.py "<App 交互问题>" --domain app
+python3 scripts/search.py "<字体需求>" --domain google-fonts
 python3 scripts/search.py "<关键词>" --stack nextjs
 ```
 
 搜索结果必须经过受众、品牌、语言、现有系统和实施成本过滤。不要机械采用第一条结果，也不要固定收敛到某个字体、渐变或 `Hero > Features > CTA`。
+
+需要主动控制探索幅度时，可使用三个 1–10 的设计调节器：
+
+```bash
+python3 scripts/search.py "<项目描述>" --design-system \
+  --variance 8 \
+  --motion 6 \
+  --density 7
+```
+
+- `variance`：从克制对称到大胆非对称
+- `motion`：从细微反馈到复杂编排；仍须遵循 Reduced Motion
+- `density`：从宽松内容布局到高密度 Dashboard
 
 ### 4. Craft：实现并精修
 

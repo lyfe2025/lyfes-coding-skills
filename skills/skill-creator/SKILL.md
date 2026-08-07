@@ -309,6 +309,10 @@ scripts/init_skill.py <skill-name> --path <output-directory>
 
 开发完成后，需要打包成可分发的 `.skill` 文件。打包脚本会先自动验证 skill 是否符合要求：
 
+`SKILL.md` 可选使用 `compatibility` 字段，描述平台或运行时限制；它必须是长度不超过 500 字符的字符串。`name` 必须使用不超过 64 字符的 kebab-case。
+
+打包器会排除 `__pycache__`、`node_modules`、`*.pyc`、`.DS_Store` 以及 skill 根目录的 `evals/`，避免把构建残留带入分发包。这些是包内容卫生规则，不是 sandbox，也不提供路径穿越、symlink 或不可信代码的安全隔离；执行外部脚本时仍须依赖宿主权限、容器或 sandbox。
+
 ```bash
 scripts/package_skill.py <path/to/skill-folder>
 ```

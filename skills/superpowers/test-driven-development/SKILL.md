@@ -352,10 +352,13 @@ PASS
 
 ## Testing Anti-Patterns
 
-当你要引入 mocks 或 test utilities 时，先读 `@testing-anti-patterns.md`，避免常见陷阱：
+当你要引入 mocks 或 test utilities 时，先读 [writing-good-tests.md](writing-good-tests.md)，避免常见陷阱：
+
 - 测 mock 行为而不是测真实行为
+- 只检查源码文字或常量，未验证实际副作用
 - 为测试在 production class 里加 test-only 方法
 - 不理解依赖就盲目 mock
+- 没有做 mutation check 就声称测试有效
 
 ## Final Rule
 

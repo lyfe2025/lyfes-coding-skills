@@ -1,0 +1,39 @@
+#!/bin/sh
+# 生成指定提交范围的只读 review package。
+set -eu
+
+usage() {
+    printf '%s\n' '用法: review-package <plan-file> <base> <head> [output-file]' >&2
+    exit 2
+}
+[ "$#" -ge 3 ] && [ "$#" -le 4 ] || usage
+plan=$1
+base=$2
+head=$3
+[ -f "$plan" ] || { printf '计划文件不存在: %s\n' "$plan" >&2; exit 2; }
+repo_root=$(git -C "$(dirname "$plan")" rev-parse --show-toplevel 2>/dev/null) || {
+    printf '%s\n' '计划文件不在 Git 仓库中' >&2
+    exit 2
+}
+out=${4:-}
+if [ -z "$out" ]; then
+    workspace=$(
+        "$(dirname "$0")/sdd-workspace" "$plan"
+    )
+    out="$workspace/review-package.md"
+else
+    mkdir -p "$(dirname "$out")"
+fi
+
+{
+    printf '# Review Package\n\n'
+    printf '%s\n' "- Plan: $plan" "- Base: $base" "- Head: $head"
+    printf '\n## Commits\n\n'
+    git -C "$repo_root" log --oneline "$base..$head"
+    printf '\n## Diff Stat\n\n'
+    git -C "$repo_root" diff --stat "$base..$head"
+    printf '\n## Diff\n\n```diff\n'
+    git -C "$repo_root" diff --no-ext-diff "$base..$head"
+    printf '\n```\n'
+} > "$out"
+printf '%s\n' "$out"

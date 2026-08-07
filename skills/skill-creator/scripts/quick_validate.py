@@ -39,7 +39,10 @@ def validate_skill(skill_path):
         return False, f"Invalid YAML in frontmatter: {e}"
 
     # Define allowed properties
-    ALLOWED_PROPERTIES = {'name', 'description', 'license', 'allowed-tools', 'metadata'}
+    ALLOWED_PROPERTIES = {
+        'name', 'description', 'license', 'allowed-tools', 'metadata',
+        'compatibility',
+    }
 
     # Check for unexpected properties (excluding nested keys under metadata)
     unexpected_keys = set(frontmatter.keys()) - ALLOWED_PROPERTIES
@@ -69,6 +72,21 @@ def validate_skill(skill_path):
         # Check name length (max 64 characters per spec)
         if len(name) > 64:
             return False, f"Name is too long ({len(name)} characters). Maximum is 64 characters."
+
+    # Validate optional platform compatibility guidance.
+    compatibility = frontmatter.get('compatibility')
+    if compatibility is not None:
+        if not isinstance(compatibility, str):
+            return False, (
+                "Compatibility must be a string, "
+                f"got {type(compatibility).__name__}"
+            )
+        compatibility = compatibility.strip()
+        if len(compatibility) > 500:
+            return False, (
+                "Compatibility is too long "
+                f"({len(compatibility)} characters). Maximum is 500 characters."
+            )
 
     # Extract and validate description
     description = frontmatter.get('description', '')

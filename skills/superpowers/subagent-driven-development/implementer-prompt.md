@@ -3,14 +3,14 @@
 Use this template when dispatching an implementer subagent.
 
 ```
-Task tool (general-purpose):
+Task/subagent dispatch:
   description: "Implement Task N: [task name]"
   prompt: |
     You are implementing Task N: [task name]
 
     ## Task Description
 
-    [FULL TEXT of task from plan - paste it here, don't make subagent read file]
+    [读取 task-brief 生成的文件内容；不要让 subagent 重新解析整份 plan]
 
     ## Context
 
@@ -32,9 +32,9 @@ Task tool (general-purpose):
     1. Implement exactly what the task specifies
     2. Write tests (following TDD if task says to)
     3. Verify implementation works
-    4. Commit your work
+    4. Commit your work when the controller requires per-task commits
     5. Self-review (see below)
-    6. Report back
+    6. Report back with the commit SHA and test evidence
 
     Work from: [directory]
 

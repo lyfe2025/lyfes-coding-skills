@@ -44,6 +44,16 @@ description: 当你有 spec/requirements 且任务需要多步推进时使用；
 ---
 ```
 
+## Plan 自审
+
+开始执行前必须检查：
+
+- **Global Constraints**：明确范围、技术限制、兼容契约和不可做事项。
+- **Interfaces**：列出修改/新增函数、CLI、文件格式或组件接口。
+- 每个 task 都能独立测试和 review，文件路径准确，验收条件可执行。
+- 不含 TBD、TODO、“补充适当测试”等未决占位符，也不加入假设的未来需求。
+- 测试命令、预期失败/通过现象和依赖关系完整。
+
 ## Task 结构
 
 ```markdown

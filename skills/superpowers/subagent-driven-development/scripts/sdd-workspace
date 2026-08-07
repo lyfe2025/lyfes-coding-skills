@@ -1,0 +1,34 @@
+#!/bin/sh
+# 为一个 implementation plan 创建隔离的 SDD 状态目录。
+set -eu
+
+usage() {
+    printf '%s\n' "用法: sdd-workspace <plan-file>" >&2
+    exit 2
+}
+
+[ "$#" -eq 1 ] || usage
+plan=$1
+[ -f "$plan" ] || {
+    printf '计划文件不存在: %s\n' "$plan" >&2
+    exit 2
+}
+
+repo_root=$(git -C "$(dirname "$plan")" rev-parse --show-toplevel 2>/dev/null) || {
+    printf '计划文件不在 Git 仓库中: %s\n' "$plan" >&2
+    exit 2
+}
+
+base=$(basename "$plan")
+base=${base%.*}
+base=$(printf '%s' "$base" | tr -c '[:alnum:]_.-' '-')
+base=$(printf '%s' "$base" | sed 's/--*/-/g; s/^-//; s/-$//')
+[ -n "$base" ] || base=plan
+
+workspace="$repo_root/.superpowers/sdd/$base"
+mkdir -p "$workspace"
+if [ ! -f "$repo_root/.superpowers/sdd/.gitignore" ]; then
+    printf '*\n' > "$repo_root/.superpowers/sdd/.gitignore"
+fi
+
+printf '%s\n' "$workspace"

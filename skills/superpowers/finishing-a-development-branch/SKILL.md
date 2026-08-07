@@ -48,7 +48,7 @@ git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null
 
 ### Step 3：给出选项
 
-只给出**严格这 4 个**选项：
+默认只给出以下 3 个选项：
 
 ```
 实现已完成。你想怎么处理？
@@ -56,10 +56,11 @@ git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null
 1. 本地合并回 <base-branch>
 2. push 并创建 Pull Request
 3. 保留分支原样（我之后再处理）
-4. 丢弃这次工作
 
 你选哪项？
 ```
+
+不要主动把 discard 放入常规菜单。只有用户明确要求丢弃时，才进入单独确认流程，并要求输入精确的 `discard`。
 
 **不要额外解释** ——保持简短。
 
@@ -111,7 +112,7 @@ EOF
 
 **不要清理 worktree。**
 
-#### 选项 4：丢弃
+#### 用户明确要求丢弃：二次确认
 
 **必须先确认：**
 ```
@@ -156,7 +157,7 @@ git worktree remove <worktree-path>
 | 1. 本地合并 | ✓ | - | - | ✓ |
 | 2. 创建 PR | - | ✓ | ✓ | - |
 | 3. 保留原样 | - | - | ✓ | - |
-| 4. 丢弃 | - | - | - | ✓（force） |
+| 用户明确要求丢弃 | - | - | - | ✓（force） |
 
 ## Common Mistakes
 
@@ -166,7 +167,7 @@ git worktree remove <worktree-path>
 
 **开放式问题**
 - **问题：** “接下来该怎么做？”→ 语义模糊
-- **修正：** 只给 4 个结构化选项
+- **修正：** 默认只给 3 个结构化选项；discard 仅在用户明确要求后单独确认
 
 **自动清理 worktree**
 - **问题：** 在仍可能需要 worktree 时把它删了（选项 2、3）
@@ -186,8 +187,8 @@ git worktree remove <worktree-path>
 
 **Always：**
 - 给选项前验证测试
-- 只给 4 个选项
-- 选项 4 必须 typed confirmation
+- 默认只给 3 个选项，不主动提供 discard
+- 用户明确要求 discard 时必须 typed confirmation
 - 仅在需要时清理 worktree
 
 ## Integration

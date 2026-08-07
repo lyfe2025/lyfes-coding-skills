@@ -14,6 +14,10 @@
 | **skill-creator** | Skill 初始化/打包工具 |
 | **superpowers** | 完整开发工作流（14 个子技能） |
 
+`skill-creator` 已选择性同步上游校验与打包能力：支持 `compatibility` 元数据、kebab-case 校验，并自动排除缓存、依赖、字节码、系统文件和根级评测目录。保留本地中文初始化流程与直接执行命令。
+
+`superpowers` 已按 `obra/superpowers` v6.2.0 选择性优化：保留 14 个中文子技能，加入计划隔离的 SDD workspace、task brief、双 verdict review、scoped re-review、有限修复循环，以及当前 Claude Code 的原生 worktree 优先和分支收尾安全规则。不引入上游插件 hooks、marketplace 或完整评测套件。
+
 ## frontend-master
 
 `frontend-master` 用于创建、重构或精修主页、个人品牌页、作品集、Landing Page、Dashboard、表单、卡片、导航及其他 Web UI。它会优先分析项目现有技术栈和设计系统，而不是直接套用固定页面结构或流行视觉风格。

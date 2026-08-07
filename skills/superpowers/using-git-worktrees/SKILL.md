@@ -15,6 +15,21 @@ git worktree 能在同一个 repo 上创建多个隔离工作区，让你同时�
 
 ## Directory Selection Process
 
+### 0) 先检查宿主能力与当前状态
+
+先确认当前是否已经位于 linked worktree，并检查仓库根目录与 submodule 边界：
+
+```bash
+git rev-parse --show-toplevel
+git rev-parse --git-common-dir
+git worktree list
+git submodule status 2>/dev/null
+```
+
+如果宿主提供原生 worktree 工具（例如 Claude Code 的 `EnterWorktree` / `ExitWorktree`），优先使用它；只有宿主没有该能力时，才继续使用下面的 `git worktree add` fallback。不要把某个宿主 API 当作所有环境都存在的前提，也不要在 submodule 内误操作父仓库的 worktree。
+
+如果创建因 sandbox 或权限限制失败，必须明确报告隔离没有成功，并按宿主允许的方式回退；不得声称已经创建了隔离 workspace。
+
 按以下优先级顺序选择 worktree 目录：
 
 ### 1) 检查是否已有目录
@@ -43,10 +58,12 @@ grep -i "worktree.*director" CLAUDE.md 2>/dev/null
 没找到 worktree 目录。你希望我把 worktree 放在哪？
 
 1. .worktrees/（项目内，隐藏目录）
-2. ~/.config/superpowers/worktrees/<project-name>/（全局位置）
+2. 其他由宿主或用户明确指定的位置
 
 你选哪一个？
 ```
+
+不要默认使用历史的全局 Superpowers worktree 路径；如果用户明确指定外部目录，仍须确认该目录的 ownership 和清理责任。
 
 ## Safety Verification
 
@@ -68,9 +85,9 @@ git check-ignore -q .worktrees 2>/dev/null || git check-ignore -q worktrees 2>/d
 
 **为什么关键：** 防止 worktree 内容被意外纳入 repo 追踪并被提交。
 
-### 对全局目录（~/.config/superpowers/worktrees）
+### 对用户明确指定的项目外目录
 
-无需 `.gitignore` 校验——它在项目目录之外。
+无需 `.gitignore` 校验，因为它在项目目录之外；但必须记录由谁创建和谁负责清理，避免删除宿主管理的 workspace。
 
 ## Creation Steps
 
@@ -88,8 +105,9 @@ case $LOCATION in
   .worktrees|worktrees)
     path="$LOCATION/$BRANCH_NAME"
     ;;
-  ~/.config/superpowers/worktrees/*)
-    path="~/.config/superpowers/worktrees/$project/$BRANCH_NAME"
+  /*)
+    # 仅使用用户或宿主明确指定的项目外绝对路径。
+    path="$LOCATION/$project/$BRANCH_NAME"
     ;;
 esac
 

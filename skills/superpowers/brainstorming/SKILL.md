@@ -32,6 +32,14 @@ description: "你必须在任何创意工作之前使用：新功能、组件搭
 - 覆盖：architecture、components、data flow、error handling、testing
 - 若发现不合理/不清晰，随时回退澄清
 
+## Design Approval Gate
+
+在进入 implementation 或 writing-plans 前：
+
+1. 将已收敛的设计写成简短 spec，覆盖 architecture、components、data flow、error handling 和 testing。
+2. 自审 spec：检查范围、约束、接口和验收标准是否一致，删除 TBD、TODO 与假设的未来需求。
+3. 明确请求用户批准；未获批准前不要写 production code，也不要调用实现类 workflow。
+
 ## After the Design
 
 **Documentation：**

@@ -17,6 +17,10 @@ description: 在任何对话开始时使用：建立“如何发现并使用 ski
 
 **在其他环境：** 参考平台文档了解 skill 的加载机制。
 
+<SUBAGENT-STOP>
+如果你是为某个明确 task 被派发的 subagent，请跳过本 bootstrap，直接执行父任务提供的 task brief；不要递归调用本 Skill，也不要把另一个 task 的上下文带入当前 task。
+</SUBAGENT-STOP>
+
 # Using Skills
 
 ## The Rule

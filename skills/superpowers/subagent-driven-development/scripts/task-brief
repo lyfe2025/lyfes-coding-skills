@@ -1,0 +1,23 @@
+#!/bin/sh
+# 提取计划中指定任务的 brief，供 implementer/reviewer 读取。
+set -eu
+
+[ "$#" -eq 2 ] || {
+    printf '%s\n' '用法: task-brief <plan-file> <task-number>' >&2
+    exit 2
+}
+plan=$1
+task=$2
+[ -f "$plan" ] || {
+    printf '计划文件不存在: %s\n' "$plan" >&2
+    exit 2
+}
+case "$task" in
+    ''|*[!0-9]*) printf '%s\n' 'task-number 必须是数字' >&2; exit 2 ;;
+esac
+
+awk -v task="$task" '
+    $0 ~ "^### Task " task ":" { found=1 }
+    found && NR > start && $0 ~ "^### Task " && $0 !~ "^### Task " task ":" { exit }
+    found { print; start=NR }
+' "$plan"

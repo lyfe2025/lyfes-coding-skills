@@ -1,13 +1,40 @@
 ---
 name: subagent-driven-development
-description: 当你在当前 session 中执行 implementation plan，且各 task 大多独立时使用：每个 task 派发新的 subagent，并在每个 task 后做两阶段 review（先 spec compliance，再 code quality）。
+description: 当你在当前 session 中执行 implementation plan，且各 task 大多独立时使用：每个 task 派发新的 subagent，使用单 reviewer 检查 spec compliance 与 code quality，并在问题修复后进行有上限的 re-review。
 ---
 
 # Subagent-Driven Development
 
-按计划执行：每个 task 派发一个全新的 implementer subagent；每个 task 完成后做两阶段 review（先 spec compliance，再 code quality）。
+按计划执行：每个 task 派发一个全新的 implementer subagent；使用一个 task reviewer 同时返回 spec compliance 与 code quality 两个 verdict；问题修复后做 scoped re-review，全部 task 完成后再做一次 broad whole-branch review。
 
-**核心原则：** 每 task 一个新 subagent + 两阶段 review（spec → quality）= 高质量、快迭代
+**核心原则：** 文件化 task brief/review package + 单 reviewer 双 verdict + 有上限的修复循环 = 可恢复、可审计的高质量迭代
+
+## Plan-scoped 状态
+
+每份 plan 都必须使用自己的状态目录，避免多个计划共用 ledger：
+
+```bash
+workspace=$(scripts/sdd-workspace docs/plans/feature-plan.md)
+brief=$(scripts/task-brief docs/plans/feature-plan.md 1)
+scripts/review-package docs/plans/feature-plan.md BASE_SHA HEAD_SHA
+```
+
+workspace 位于 `.superpowers/sdd/<plan-basename>/`，由脚本创建自忽略目录。不要把 brief、review package 或 progress ledger 写进 `.git/`，也不要让不同 plan 共用一个 progress 文件。
+
+## Review 生命周期
+
+1. implementer 使用 `task-brief` 提供的单 task 内容实现、测试并自审。
+2. task reviewer 读取 `review-package`，输出 `SPEC_COMPLIANCE` 和 `QUALITY` 两个独立 verdict；reviewer 只读，不修改工作树。
+3. 有 Critical/Important 或 spec 缺口时，由 controller 派发修复；前 3 轮尽量恢复原 implementer，后 2 轮换用新的、更强的 implementer。
+4. 最多 5 轮修复/re-review。达到上限后必须 adjudicate：非阻塞建议标记 `PARKED`，load-bearing 问题保持阻塞，不能无限重试。
+5. 所有 task 通过后，执行一次 broad whole-branch review；修复后只对 broad findings 做 scoped re-review，再进入 `finishing-a-development-branch`。
+
+详见：
+- `task-reviewer-prompt.md`
+- `re-review-prompt.md`
+- `scripts/task-brief`
+- `scripts/review-package`
+- `scripts/sdd-workspace`
 
 ## When to Use
 
@@ -32,7 +59,7 @@ digraph when_to_use {
 **对比 Executing Plans（独立 session）：**
 - 同一 session（无上下文切换）
 - 每 task 新 subagent（避免上下文污染）
-- 每 task 自动两阶段 review（先 spec，再质量）
+- 每 task 由一个 reviewer 返回两个独立 verdict，并按需 scoped re-review
 - 迭代更快（task 之间无需人类中断）
 
 ## The Process
@@ -47,35 +74,33 @@ digraph process {
         "implementer 有问题要问？" [shape=diamond];
         "回答问题并补充上下文" [shape=box];
         "implementer 实现/测试/提交/self-review" [shape=box];
-        "派发 spec reviewer（./spec-reviewer-prompt.md）" [shape=box];
-        "spec reviewer 确认满足 spec？" [shape=diamond];
-        "implementer 修复 spec 缺口" [shape=box];
-        "派发 code quality reviewer（./code-quality-reviewer-prompt.md）" [shape=box];
-        "code quality reviewer 通过？" [shape=diamond];
-        "implementer 修复质量问题" [shape=box];
-        "在 TodoWrite 标记 task 完成" [shape=box];
+        "派发 task reviewer（./task-reviewer-prompt.md）" [shape=box];
+        "两个 verdict 都通过？" [shape=diamond];
+        "implementer 修复并 scoped re-review" [shape=box];
+        "5 轮内仍可修复？" [shape=diamond];
+        "adjudicate：parked 或阻塞" [shape=box];
+        "更新当前 task 状态" [shape=box];
     }
 
-    "读取 plan，提取全部 tasks（含原文与上下文），创建 TodoWrite" [shape=box];
+    "读取 plan，创建 plan-scoped workspace 与 task 状态" [shape=box];
     "还有 task 吗？" [shape=diamond];
     "派发最终 code reviewer（全局 review）" [shape=box];
     "使用 superpowers:finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
 
-    "读取 plan，提取全部 tasks（含原文与上下文），创建 TodoWrite" -> "派发 implementer subagent（./implementer-prompt.md）";
+    "读取 plan，创建 plan-scoped workspace 与 task 状态" -> "派发 implementer subagent（./implementer-prompt.md）";
     "派发 implementer subagent（./implementer-prompt.md）" -> "implementer 有问题要问？";
     "implementer 有问题要问？" -> "回答问题并补充上下文" [label="是"];
     "回答问题并补充上下文" -> "派发 implementer subagent（./implementer-prompt.md）";
     "implementer 有问题要问？" -> "implementer 实现/测试/提交/self-review" [label="否"];
-    "implementer 实现/测试/提交/self-review" -> "派发 spec reviewer（./spec-reviewer-prompt.md）";
-    "派发 spec reviewer（./spec-reviewer-prompt.md）" -> "spec reviewer 确认满足 spec？";
-    "spec reviewer 确认满足 spec？" -> "implementer 修复 spec 缺口" [label="否"];
-    "implementer 修复 spec 缺口" -> "派发 spec reviewer（./spec-reviewer-prompt.md）" [label="re-review"];
-    "spec reviewer 确认满足 spec？" -> "派发 code quality reviewer（./code-quality-reviewer-prompt.md）" [label="是"];
-    "派发 code quality reviewer（./code-quality-reviewer-prompt.md）" -> "code quality reviewer 通过？";
-    "code quality reviewer 通过？" -> "implementer 修复质量问题" [label="否"];
-    "implementer 修复质量问题" -> "派发 code quality reviewer（./code-quality-reviewer-prompt.md）" [label="re-review"];
-    "code quality reviewer 通过？" -> "在 TodoWrite 标记 task 完成" [label="是"];
-    "在 TodoWrite 标记 task 完成" -> "还有 task 吗？";
+    "implementer 实现/测试/提交/self-review" -> "派发 task reviewer（./task-reviewer-prompt.md）";
+    "派发 task reviewer（./task-reviewer-prompt.md）" -> "两个 verdict 都通过？";
+    "两个 verdict 都通过？" -> "更新当前 task 状态" [label="是"];
+    "两个 verdict 都通过？" -> "5 轮内仍可修复？" [label="否"];
+    "5 轮内仍可修复？" -> "implementer 修复并 scoped re-review" [label="是"];
+    "implementer 修复并 scoped re-review" -> "派发 task reviewer（./task-reviewer-prompt.md）";
+    "5 轮内仍可修复？" -> "adjudicate：parked 或阻塞" [label="否"];
+    "adjudicate：parked 或阻塞" -> "更新当前 task 状态" [label="非阻塞"];
+    "更新当前 task 状态" -> "还有 task 吗？";
     "还有 task 吗？" -> "派发 implementer subagent（./implementer-prompt.md）" [label="是"];
     "还有 task 吗？" -> "派发最终 code reviewer（全局 review）" [label="否"];
     "派发最终 code reviewer（全局 review）" -> "使用 superpowers:finishing-a-development-branch";
@@ -85,8 +110,9 @@ digraph process {
 ## Prompt Templates
 
 - `./implementer-prompt.md`：派发 implementer subagent
-- `./spec-reviewer-prompt.md`：派发 spec compliance reviewer subagent
-- `./code-quality-reviewer-prompt.md`：派发 code quality reviewer subagent
+- `./task-reviewer-prompt.md`：派发只读 task reviewer，同时返回两个 verdict
+- `./re-review-prompt.md`：只验证上一轮修复的 scoped re-review
+- `./spec-reviewer-prompt.md`、`./code-quality-reviewer-prompt.md`：旧路径兼容入口，不再作为主流程的两个独立阶段
 
 ## Example Workflow
 
@@ -94,8 +120,8 @@ digraph process {
 你：我正在使用 Subagent-Driven Development 来执行这个计划。
 
 [只读一次计划文件：docs/plans/feature-plan.md]
-[提取 5 个 tasks 的完整原文与上下文]
-[创建 TodoWrite，包含所有 tasks]
+[使用 task-brief 提取每个 task 的最小上下文]
+[创建 plan-scoped workspace，并建立当前 session 的 task 状态]
 
 Task 1：安装 hook 脚本
 
@@ -113,11 +139,8 @@ Implementer：“收到，开始实现……”
   - 自检（self-review）：发现漏了 --force flag，已补上
   - 已提交
 
-[派发 spec compliance reviewer]
-Spec reviewer：✅ 满足 spec——需求齐全，没有多做
-
-[获取 git SHAs，派发 code quality reviewer]
-Code reviewer：优点：覆盖好、代码干净。问题：无。结论：通过。
+[派发 task reviewer]
+Task reviewer：SPEC_COMPLIANCE: PASS；QUALITY: PASS
 
 [标记 Task 1 完成]
 
@@ -131,25 +154,13 @@ Implementer：
   - 自检（self-review）：OK
   - 已提交
 
-[派发 spec compliance reviewer]
-Spec reviewer：❌ 问题：
-  - 缺失：进度汇报（spec 写了“每 100 项报告一次”）
-  - 多做：新增了 --json flag（未要求）
+[派发 task reviewer]
+Task reviewer：
+  SPEC_COMPLIANCE: FAIL（缺失进度汇报，多做 --json flag）
+  QUALITY: FAIL（magic number 100）
 
-[implementer 修复]
-Implementer：移除 --json flag，新增进度汇报
-
-[spec reviewer 复审]
-Spec reviewer：✅ 现在满足 spec
-
-[派发 code quality reviewer]
-Code reviewer：优点：扎实。问题（重要）：magic number（100）
-
-[implementer 修复]
-Implementer：抽出 PROGRESS_INTERVAL 常量
-
-[code quality reviewer 复审]
-Code reviewer：✅ 通过
+[implementer 修复并执行 scoped re-review]
+Task reviewer：SPEC_COMPLIANCE: PASS；QUALITY: PASS
 
 [标记 Task 2 完成]
 
@@ -183,24 +194,23 @@ Final reviewer：需求满足，可以合并
 
 **质量闸门（Quality gates）：**
 - self-review 先抓一轮问题
-- 两阶段 review：spec compliance → code quality
-- review loop 确保修复真的生效
-- spec compliance 防止多做/少做
-- code quality 确保实现本身够好
+- 一个 task reviewer 同时检查 spec compliance 与 code quality
+- scoped re-review 确保修复真的生效
+- 五轮 circuit breaker 防止无限循环
+- broad whole-branch review 捕获跨 task 问题
 
 **成本：**
-- subagent 调用更多（每 task：implementer + 2 reviewers）
-- controller 需要更多前置准备（提前提取所有 tasks）
-- review loop 会增加迭代次数
-- 但能更早抓问题（比后期 debugging 便宜）
+- 每 task 至少包含 implementer 与 reviewer
+- controller 需要维护 plan-scoped 状态和 review package
+- 修复循环会增加迭代次数，但有明确上限
 
 ## Red Flags
 
 **Never：**
-- 跳过 review（spec 或 quality 任意一类）
+- 跳过 review（两个 verdict 任意一类）
 - 带着未修复问题继续推进
 - 并行派发多个 implementer（会冲突）
-- 让 subagent 自己读 plan 文件（应提供完整文本）
+- 让 subagent 自己读整份 plan（应提供 task brief）
 - 跳过 scene-setting 上下文（subagent 需要理解任务放在哪）
 - 忽略 subagent 的问题（先回答再让其继续）
 - 对 spec compliance 接受“差不多”（reviewer 找到问题 = 还没完成）

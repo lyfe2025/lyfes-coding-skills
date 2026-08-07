@@ -13,7 +13,12 @@ Example:
 import sys
 import zipfile
 from pathlib import Path
-from quick_validate import validate_skill
+
+try:
+    from .quick_validate import validate_skill
+except ImportError:
+    # 保持直接执行 package_skill.py 的本地命令兼容性。
+    from quick_validate import validate_skill
 
 
 def package_skill(skill_path, output_dir=None):
@@ -66,13 +71,24 @@ def package_skill(skill_path, output_dir=None):
     # Create the .skill file (zip format)
     try:
         with zipfile.ZipFile(skill_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            # Walk through the skill directory
+            # Walk through the skill directory while keeping build artifacts out.
             for file_path in skill_path.rglob('*'):
-                if file_path.is_file():
-                    # Calculate the relative path within the zip
-                    arcname = file_path.relative_to(skill_path.parent)
-                    zipf.write(file_path, arcname)
-                    print(f"  Added: {arcname}")
+                relative_path = file_path.relative_to(skill_path)
+                parts = relative_path.parts
+                if (
+                    not file_path.is_file()
+                    or '__pycache__' in parts
+                    or 'node_modules' in parts
+                    or file_path.name in {'.DS_Store'}
+                    or file_path.suffix == '.pyc'
+                    or (len(parts) > 0 and parts[0] == 'evals')
+                ):
+                    continue
+
+                # 保持原有包内目录结构：<skill-name>/...
+                arcname = file_path.relative_to(skill_path.parent)
+                zipf.write(file_path, arcname)
+                print(f"  Added: {arcname}")
 
         print(f"\n✅ Successfully packaged skill to: {skill_filename}")
         return skill_filename

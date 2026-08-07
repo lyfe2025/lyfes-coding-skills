@@ -1,20 +1,8 @@
-# Code Quality Reviewer Prompt Template
+# Code Quality Reviewer 兼容入口
 
-Use this template when dispatching a code quality reviewer subagent.
+此文件保留用于兼容旧计划和旧引用。新流程不要单独派发 code quality reviewer；请使用 [task-reviewer-prompt.md](task-reviewer-prompt.md)，由同一个只读 reviewer 同时返回：
 
-**Purpose:** Verify implementation is well-built (clean, tested, maintainable)
+- `SPEC_COMPLIANCE`
+- `QUALITY`
 
-**Only dispatch after spec compliance review passes.**
-
-```
-Task tool (superpowers:code-reviewer):
-  Use template at requesting-code-review/code-reviewer.md
-
-  WHAT_WAS_IMPLEMENTED: [from implementer's report]
-  PLAN_OR_REQUIREMENTS: Task N from [plan-file]
-  BASE_SHA: [commit before task]
-  HEAD_SHA: [current commit]
-  DESCRIPTION: [task summary]
-```
-
-**Code reviewer returns:** Strengths, Issues (Critical/Important/Minor), Assessment
+如需验证修复，使用 [re-review-prompt.md](re-review-prompt.md) 做 scoped re-review。不要重新恢复旧的“spec reviewer → code quality reviewer”双代理串行流程。
